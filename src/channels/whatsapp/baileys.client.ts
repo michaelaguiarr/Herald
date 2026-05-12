@@ -5,30 +5,27 @@ import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   Browsers,
-  fetchLatestBaileysVersion,
 } from '@whiskeysockets/baileys'
 
 export type WaSessionStatus = 'WARMING' | 'ACTIVE' | 'DISCONNECTED' | 'BANNED'
 
 const RECONNECT_DELAY_MS = 5_000
 
+// Minimal pino-compatible logger that suppresses Baileys noise.
+// Baileys v7 expects a pino Logger — cast via `as never` to bypass TS.
 const makeSilentLogger = (channelId: string) =>
   ({
-    level: 'silent',
+    level: 'warn',
     trace: () => {},
     debug: () => {},
-    info: () => {},
-    warn: (msg: unknown) => console.warn(`[wa:${channelId}]`, msg),
+    info:  () => {},
+    warn:  (msg: unknown) => console.warn(`[wa:${channelId}]`, msg),
     error: (msg: unknown) => console.error(`[wa:${channelId}]`, msg),
-    fatal: (msg: unknown) => console.error(`[wa:${channelId}]`, msg),
-    child: function () {
-      return this
-    },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  }) as any
+    fatal: (msg: unknown) => console.error(`[wa:${channelId}] FATAL`, msg),
+    child: function () { return this },
+  }) as never
 
 export class BaileysClient extends EventEmitter {
-  // Kept public-readable for session.manager reconnect checks
   private socket: ReturnType<typeof makeWASocket> | null = null
   private _status: WaSessionStatus = 'WARMING'
   readonly channelId: string
@@ -53,25 +50,23 @@ export class BaileysClient extends EventEmitter {
 
   async connect(): Promise<void> {
     const { state, saveCreds } = await useMultiFileAuthState(this.sessionDir)
-    const { version } = await fetchLatestBaileysVersion()
 
-    // Capture local reference so that events from a replaced/disconnected socket
-    // are silently ignored — prevents spurious DB writes during reconnect.
+    // v7: version is hardcoded in DEFAULT_CONNECTION_CONFIG ([2, 3000, 1035194821]).
+    // fetchLatestBaileysVersion() was removed — just omit `version` from config.
     const socket = makeWASocket({
-      version,
       auth: state,
-      printQRInTerminal: false,
       browser: Browsers.ubuntu('Desktop'),
       generateHighQualityLinkPreview: false,
       logger: makeSilentLogger(this.channelId),
+      // printQRInTerminal removed in v7 — handle QR via connection.update event
     })
     this.socket = socket
 
     socket.ev.on('creds.update', saveCreds)
 
+    // Capture `socket` in closure: if this.socket is replaced (reconnect/disconnect),
+    // events from the old socket are ignored — prevents spurious DB writes.
     socket.ev.on('connection.update', (update) => {
-      // FIX: if this.socket was replaced (null or new socket), the event came
-      // from a stale socket — ignore it to prevent phantom DISCONNECTED writes.
       if (this.socket !== socket) return
 
       const { connection, lastDisconnect, qr } = update
@@ -89,9 +84,8 @@ export class BaileysClient extends EventEmitter {
           lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
         )?.output?.statusCode
 
-        // FIX: only DisconnectReason.forbidden (403) is a genuine WhatsApp ban.
-        // loggedOut (401) means the user removed the device from their phone —
-        // the number is NOT banned and can be re-connected by scanning QR again.
+        // forbidden (403) = genuine WhatsApp ban.
+        // loggedOut (401) = user removed device from phone — can reconnect via QR.
         if (statusCode === DisconnectReason.forbidden) {
           this.setStatus('BANNED')
           this._shouldReconnect = false
@@ -114,9 +108,7 @@ export class BaileysClient extends EventEmitter {
   async disconnect(emitStatusChange = true): Promise<void> {
     this._shouldReconnect = false
     const socket = this.socket
-    // Nullify before end() so any async close event from the socket
-    // sees this.socket !== socket and returns immediately.
-    this.socket = null
+    this.socket = null  // nullify first so close event is ignored
     if (socket) {
       socket.end(undefined)
     }
@@ -136,11 +128,11 @@ export class BaileysClient extends EventEmitter {
     const normalized = phone.replace(/\D/g, '')
     const jid = `${normalized}@s.whatsapp.net`
 
-    // Best-effort JID verification — only blocks when WA explicitly says the number
-    // doesn't exist. If onWhatsApp itself throws (network/session error), we log and
-    // proceed so a transient failure here doesn't silently drop the message.
+    // Best-effort JID check — only blocks when WA explicitly says number doesn't exist.
+    // If onWhatsApp throws (network/session issue), log and proceed.
     try {
-      const [check] = await this.socket.onWhatsApp(jid)
+      const checks = await this.socket.onWhatsApp(jid)
+      const check = checks?.[0]
       if (check !== undefined && !check.exists) {
         throw new Error(`Número ${phone} não encontrado no WhatsApp (JID: ${jid})`)
       }
@@ -153,18 +145,21 @@ export class BaileysClient extends EventEmitter {
     const result = await this.socket.sendMessage(jid, { text })
     console.log(
       `[wa:${this.channelId}] sendMessage → jid=${jid} ` +
-        `msgId=${result?.key?.id} status=${result?.status}`
+      `msgId=${result?.key?.id} status=${result?.status ?? 'unknown'}`
     )
   }
 
-  /**
-   * Diagnoses a phone number: checks WhatsApp registration and optionally sends
-   * a test message. Used by the [Dev] test endpoint.
-   */
   async diagnose(
     phone: string,
     sendText?: string
-  ): Promise<{ jid: string; exists: boolean | null; checkError?: string; messageSent: boolean; messageStatus?: number; sendError?: string }> {
+  ): Promise<{
+    jid: string
+    exists: boolean | null
+    checkError?: string
+    messageSent: boolean
+    messageStatus?: number
+    sendError?: string
+  }> {
     if (!this.socket) {
       return { jid: '', exists: null, checkError: 'Socket não inicializado', messageSent: false }
     }
@@ -176,8 +171,8 @@ export class BaileysClient extends EventEmitter {
     let checkError: string | undefined
 
     try {
-      const [check] = await this.socket.onWhatsApp(jid)
-      exists = check?.exists ?? false
+      const checks = await this.socket.onWhatsApp(jid)
+      exists = checks?.[0]?.exists ?? false
     } catch (err) {
       checkError = err instanceof Error ? err.message : String(err)
     }
@@ -188,7 +183,12 @@ export class BaileysClient extends EventEmitter {
 
     try {
       const result = await this.socket.sendMessage(jid, { text: sendText })
-      return { jid, exists, checkError, messageSent: true, messageStatus: result?.status }
+      const rawStatus = result?.status
+      return {
+        jid, exists, checkError, messageSent: true,
+        // proto.Status is an enum — coerce to number for the response schema
+        messageStatus: rawStatus != null ? Number(rawStatus) : undefined,
+      }
     } catch (err) {
       return {
         jid, exists, checkError,

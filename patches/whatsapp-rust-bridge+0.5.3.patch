@@ -1,0 +1,12 @@
+diff --git a/node_modules/whatsapp-rust-bridge/package.json b/node_modules/whatsapp-rust-bridge/package.json
+index 1234567..abcdefg 100644
+--- a/node_modules/whatsapp-rust-bridge/package.json
++++ b/node_modules/whatsapp-rust-bridge/package.json
+@@ -16,6 +16,7 @@
+     "exports": {
+         ".": {
+             "import": "./dist/index.js",
++            "default": "./dist/index.js",
+             "types": "./dist/index.d.ts"
+         }
+     },

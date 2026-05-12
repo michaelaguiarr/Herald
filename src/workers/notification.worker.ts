@@ -194,8 +194,3 @@ export function startNotificationWorker() {
   return worker
 }
 
-// Allow running as a standalone process: npx tsx src/workers/notification.worker.ts
-if (require.main === module) {
-  startNotificationWorker()
-  console.log('[worker] Notification worker iniciado como processo independente')
-}
