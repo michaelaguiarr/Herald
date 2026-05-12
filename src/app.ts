@@ -12,6 +12,8 @@ import { organizationsRoutes } from './http/routes/organizations'
 import { usersRoutes } from './http/routes/users'
 import { channelsRoutes } from './http/routes/channels'
 import { notificationsRoutes } from './http/routes/notifications'
+import { dashboardRoutes } from './http/routes/dashboard'
+import { auditLogsRoutes } from './http/routes/audit-logs'
 import { startNotificationWorker } from './workers/notification.worker'
 import { startAlertWorker } from './workers/alert.worker'
 import { startSchedulerWorker, registerDailyJobs } from './workers/scheduler.worker'
@@ -74,6 +76,8 @@ export async function buildApp() {
   await app.register(usersRoutes, { prefix: '/v1' })
   await app.register(channelsRoutes, { prefix: '/v1' })
   await app.register(notificationsRoutes, { prefix: '/v1' })
+  await app.register(dashboardRoutes, { prefix: '/v1' })
+  await app.register(auditLogsRoutes, { prefix: '/v1' })
 
   startNotificationWorker()
   startAlertWorker()

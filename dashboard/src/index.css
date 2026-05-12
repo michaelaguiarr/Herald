@@ -5,6 +5,7 @@ body {
   background: #f4f6f9;
   color: #1a1a2e;
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
 }
 
 button {
@@ -14,17 +15,29 @@ button {
   padding: 6px 14px;
   font-size: 13px;
   font-weight: 500;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s, background 0.15s;
 }
-button:hover { opacity: 0.85; }
-button:disabled { opacity: 0.4; cursor: not-allowed; }
+button:hover:not(:disabled) { opacity: 0.88; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
 
-input {
+input, select {
   border: 1px solid #d1d5db;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 8px 12px;
   font-size: 14px;
-  width: 100%;
   outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  font-family: inherit;
 }
-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px #bfdbfe; }
+input:focus, select:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px #bfdbfe;
+}
+
+@keyframes spin  { to { transform: rotate(360deg) } }
+@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.4 } }
+@keyframes fade-in { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
+
+/* Recharts tooltip polish */
+.recharts-tooltip-wrapper { border-radius: 8px !important; }
+.recharts-default-tooltip { border-radius: 8px !important; border: 1px solid #e5e7eb !important; }
