@@ -141,7 +141,7 @@ export async function channelsRoutes(fastify: FastifyInstance) {
       const filter = await buildEntityOrgFilter(request.user)
       const channels = await prisma.channel.findMany({
         where: {
-          ...(filter as object),
+          ...filter,
           status: { not: ChannelStatus.INACTIVE },
           ...(request.query.type && { type: request.query.type }),
         },
@@ -170,7 +170,7 @@ export async function channelsRoutes(fastify: FastifyInstance) {
       const { id } = request.params
       const filter = await buildEntityOrgFilter(request.user)
       const channel = await prisma.channel.findFirst({
-        where: { id, ...(filter as object), status: { not: ChannelStatus.INACTIVE } },
+        where: { id, ...filter, status: { not: ChannelStatus.INACTIVE } },
       })
       if (!channel) throw new AppError(404, 'Canal não encontrado')
       return reply.send(channel)

@@ -27,13 +27,16 @@ export function buildOrgFilter(user: {
   return { id: user.organizationId ?? '' }
 }
 
-// Plain filter shape that works as a spread into any Prisma model with organizationId.
-// SUPER_ADMIN sees their paróquia AND all its child comunidades.
-// Must be awaited — queries DB to resolve child org IDs for SUPER_ADMIN.
-export type OrgScopeFilter =
-  | Record<string, never>
-  | { organizationId: string }
-  | { organizationId: { in: string[] } }
+// Typed filter for org-scoped Prisma queries.
+// Using a single optional field makes it safely spreadable without "as object" casts:
+//   OWNER: organizationId undefined → Prisma ignores it (returns all rows)
+//   ADMIN/OPERATOR: organizationId string → exact match
+//   SUPER_ADMIN: organizationId { in: [...] } → matches paróquia + comunidades
+// { in: string[] } is structurally compatible with Prisma StringFilter
+// (all StringFilter fields are optional), so TypeScript accepts it without casting.
+export type OrgScopeFilter = {
+  organizationId?: string | { in: string[] }
+}
 
 export async function buildEntityOrgFilter(user: {
   role: UserRole

@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { ZodTypeProvider } from 'fastify-type-provider-zod'
 import { z } from 'zod'
+import { randomUUID } from 'crypto'
 import { ChannelType, NotificationStatus, UserRole } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { AppError } from '../errors/app-error'
@@ -23,6 +24,7 @@ const notificationShape = z.object({
   scheduledAt: z.date().nullable(),
   sentAt: z.date().nullable(),
   retryCycle: z.number(),
+  bullJobId: z.string().nullable(),
   createdAt: z.date(),
 })
 
@@ -114,7 +116,11 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
         return created
       })
 
-      await notificationQueue.add('send', { notificationId: notification.id })
+      const job = await notificationQueue.add('send', { notificationId: notification.id })
+      if (job.id) {
+        await prisma.notification.update({ where: { id: notification.id }, data: { bullJobId: job.id } })
+        notification.bullJobId = job.id
+      }
 
       return reply.status(202).send(notification)
     }
@@ -150,7 +156,7 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
       const skip = (page - 1) * limit
 
       const where = {
-        ...(filter as object),
+        ...filter,
         ...(status && { status }),
         ...(channelType && { channelType }),
       }
@@ -272,7 +278,11 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
         return result
       })
 
-      await notificationQueue.add('send', { notificationId: id })
+      const retryJob = await notificationQueue.add('send', { notificationId: id })
+      if (retryJob.id) {
+        await prisma.notification.update({ where: { id }, data: { bullJobId: retryJob.id } })
+        updated.bullJobId = retryJob.id
+      }
 
       return reply.status(202).send(updated)
     }
@@ -352,7 +362,11 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
       })
 
       // BullMQ delayed job — fires exactly at scheduledAt
-      await notificationQueue.add('send', { notificationId: notification.id }, { delay: delayMs })
+      const scheduleJob = await notificationQueue.add('send', { notificationId: notification.id }, { delay: delayMs })
+      if (scheduleJob.id) {
+        await prisma.notification.update({ where: { id: notification.id }, data: { bullJobId: scheduleJob.id } })
+        notification.bullJobId = scheduleJob.id
+      }
 
       return reply.status(202).send(notification)
     }
@@ -415,40 +429,71 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
         },
       })
 
-      let enqueued = 0
-      let skipped = 0
+      // Build recipient list — filter users without the required contact field
+      const eligible = users.filter((u) =>
+        channelType === ChannelType.EMAIL ? !!u.email : !!u.telegramId
+      )
+      const skipped = users.length - eligible.length
 
-      for (const user of users) {
-        const recipientField =
-          channelType === ChannelType.EMAIL ? user.email : user.telegramId
-        if (!recipientField) { skipped++; continue }
-
-        const notification = await prisma.notification.create({
-          data: {
-            organizationId,
-            channelType,
-            recipientName: user.name,
-            recipientEmail: channelType === ChannelType.EMAIL ? user.email : null,
-            recipientTelegramId: channelType === ChannelType.TELEGRAM ? user.telegramId : null,
-            message,
-            status: NotificationStatus.PENDENTE,
-          },
+      if (eligible.length === 0) {
+        await writeAuditLog({
+          userId: actor.sub,
+          organizationId: actor.organizationId,
+          action: 'NOTIFICATION_BROADCAST',
+          targetId: organizationId,
+          targetType: 'organization',
+          metadata: { channelType, enqueued: 0, skipped, total: users.length },
+          ipAddress: request.ip,
         })
-        await notificationQueue.add('send', { notificationId: notification.id })
-        enqueued++
+        return reply.status(202).send({ enqueued: 0, skipped, total: users.length })
       }
 
-      await writeAuditLog({
-        userId: actor.sub,
-        organizationId: actor.organizationId,
-        action: 'NOTIFICATION_BROADCAST',
-        targetId: organizationId,
-        targetType: 'organization',
-        metadata: { channelType, enqueued, skipped, total: users.length },
-        ipAddress: request.ip,
+      // Pre-generate IDs so we can track them after createMany
+      const notificationData = eligible.map((user) => ({
+        id: randomUUID(),
+        organizationId,
+        channelType,
+        recipientName: user.name,
+        recipientEmail: channelType === ChannelType.EMAIL ? user.email : null,
+        recipientTelegramId: channelType === ChannelType.TELEGRAM ? user.telegramId : null,
+        message,
+        status: NotificationStatus.PENDENTE,
+      }))
+
+      // Atomic batch creation — all or nothing
+      await prisma.$transaction(async (tx) => {
+        await tx.notification.createMany({ data: notificationData })
+        await writeAuditLog(
+          {
+            userId: actor.sub,
+            organizationId: actor.organizationId,
+            action: 'NOTIFICATION_BROADCAST',
+            targetId: organizationId,
+            targetType: 'organization',
+            metadata: { channelType, enqueued: eligible.length, skipped, total: users.length },
+            ipAddress: request.ip,
+          },
+          tx
+        )
       })
 
-      return reply.status(202).send({ enqueued, skipped, total: users.length })
+      // Enqueue all jobs in parallel, then persist BullMQ job IDs
+      const jobs = await Promise.all(
+        notificationData.map((n) => notificationQueue.add('send', { notificationId: n.id }))
+      )
+
+      // Save job IDs for future cancellation (best-effort, non-blocking)
+      Promise.all(
+        jobs.map((job, idx) =>
+          job.id
+            ? prisma.notification
+                .update({ where: { id: notificationData[idx].id }, data: { bullJobId: job.id } })
+                .catch(() => {})
+            : Promise.resolve()
+        )
+      ).catch(() => {})
+
+      return reply.status(202).send({ enqueued: eligible.length, skipped, total: users.length })
     }
   )
 }

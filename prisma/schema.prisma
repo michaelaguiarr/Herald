@@ -115,6 +115,7 @@ model Notification {
   scheduledAt         DateTime?          @map("scheduled_at")
   sentAt              DateTime?          @map("sent_at")
   retryCycle          Int                @default(0) @map("retry_cycle")
+  bullJobId           String?            @map("bull_job_id")
   createdAt           DateTime           @default(now()) @map("created_at")
 
   attempts NotificationAttempt[]
