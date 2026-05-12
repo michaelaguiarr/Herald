@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "a8f3d2c1-b4e5-4f6a-8901-23456789abcd",
     "name": "Herald API",
-    "description": "Coleção completa da Herald API — Serviço de notificações multi-canal para paróquias e comunidades.\n\n## Como usar\n1. Execute **Auth › Login** para obter o token (salvo automaticamente em `{{token}}`)\n2. Crie uma paróquia em **Organizations › Criar Paróquia** — `{{orgId}}` é salvo automaticamente\n3. Crie uma comunidade em **Organizations › Criar Comunidade** — `{{comunidadeId}}` é salvo\n4. Siga o fluxo: Users → Channels → Notifications\n\n## Hierarquia de perfis\n```\nOWNER → cria SUPER_ADMIN\nSUPER_ADMIN → cria ADMIN (própria paróquia)\nADMIN → cria OPERATOR (própria comunidade)\n```\n\n## Variáveis\n| Variável | Descrição |\n|---|---|\n| `baseUrl` | URL base da API |\n| `token` | JWT salvo automaticamente no login |\n| `orgId` | ID da paróquia (salvo ao criar) |\n| `comunidadeId` | ID da comunidade (salvo ao criar) |\n| `userId` | ID do último usuário criado |\n| `channelId` | ID do último canal criado |\n| `notificationId` | ID da última notificação enviada |",
+    "description": "Coleção completa da Herald API — Serviço de notificações multi-canal para paróquias e comunidades.\n\n**Cobertura:** Fases 1, 2 e 3 (Auth, Orgs, Users, Channels Email+WhatsApp, Notifications)\n\n## Como usar\n1. Execute **Auth › Login** para obter o token (salvo automaticamente em `{{token}}`)\n2. Crie uma paróquia em **Organizations › Criar Paróquia** — `{{orgId}}` é salvo automaticamente\n3. Crie uma comunidade em **Organizations › Criar Comunidade** — `{{comunidadeId}}` é salvo\n4. Siga o fluxo: Users → Channels → Notifications\n\n## Fluxo WhatsApp (Fase 3)\n1. Execute **Channels › Criar Canal WhatsApp** — `{{waChannelId}}` é salvo\n2. Abra o **mini-dashboard** (`cd dashboard && npm run dev` → `http://localhost:5173`) para ver o QR Code\n3. Escaneie com o WhatsApp — status muda para `ACTIVE`\n4. Envie uma notificação com **Notifications › Enviar Notificação (WhatsApp)**\n\n## Hierarquia de perfis\n```\nOWNER → cria SUPER_ADMIN\nSUPER_ADMIN → cria ADMIN (própria paróquia)\nADMIN → cria OPERATOR (própria comunidade)\n```\n\n## Variáveis\n| Variável | Descrição |\n|---|---|\n| `baseUrl` | URL base da API |\n| `token` | JWT salvo automaticamente no login |\n| `orgId` | ID da paróquia (salvo ao criar) |\n| `comunidadeId` | ID da comunidade (salvo ao criar) |\n| `userId` | ID do último usuário criado |\n| `channelId` | ID do último canal criado |\n| `waChannelId` | ID do último canal WhatsApp criado |\n| `notificationId` | ID da última notificação enviada |",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -47,6 +47,12 @@
       "value": "",
       "type": "string",
       "description": "ID da última notificação enviada."
+    },
+    {
+      "key": "waChannelId",
+      "value": "",
+      "type": "string",
+      "description": "ID do último canal WhatsApp criado. Preenchido automaticamente por 'Criar Canal WhatsApp'."
     }
   ],
   "item": [
@@ -510,7 +516,7 @@
     },
     {
       "name": "Channels",
-      "description": "Gestão de canais de entrega (Email, WhatsApp, Telegram). As credenciais são criptografadas com AES-256 antes de persistir e nunca são expostas nos responses de listagem/criação.",
+      "description": "Gestão de canais de entrega (Email, WhatsApp, Telegram). As credenciais são criptografadas com AES-256 antes de persistir e nunca são expostas nos responses.\n\n**Endpoints WhatsApp (Fase 3):**\n- `GET /qrcode` — stream SSE para onboarding via QR Code\n- `POST /reconnect` — reinicia sessão Baileys (canal volta para `WARMING`)\n- `GET /channels?type=WHATSAPP` — lista apenas canais WhatsApp",
       "item": [
         {
           "name": "Criar Canal Email",
@@ -554,6 +560,25 @@
         },
         {
           "name": "Criar Canal WhatsApp",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('waChannelId', body.id);",
+                  "    pm.collectionVariables.set('channelId', body.id);",
+                  "    console.log('✅ waChannelId salvo:', body.id, '| Status inicial:', body.status);",
+                  "    console.log('Próximo passo: abra GET /v1/channels/:id/qrcode para escanear o QR Code.');",
+                  "} else {",
+                  "    console.error('❌ Falha ao criar canal WA:', pm.response.json().message);",
+                  "}"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [
@@ -562,7 +587,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"type\": \"WHATSAPP\",\n  \"label\": \"WhatsApp +55 (95) 99123-4567\",\n  \"credentials\": {\n    \"phone\": \"+5595991234567\"\n  },\n  \"dailyLimit\": 200,\n  \"hourlyLimit\": 30\n}",
+              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"type\": \"WHATSAPP\",\n  \"label\": \"WhatsApp Principal +55 (95) 99123-4567\",\n  \"credentials\": {\n    \"phoneNumber\": \"+5595991234567\"\n  },\n  \"dailyLimit\": 200,\n  \"hourlyLimit\": 30\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
@@ -570,7 +595,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["v1", "channels"]
             },
-            "description": "Cria um canal WhatsApp. Após criado, o onboarding via QR Code é realizado em **GET /v1/channels/:id/qrcode** (implementado na Fase 3).\n\nO canal é criado com status `WARMING` após o scan do QR Code, tornando-se `ACTIVE` após 7 dias.\n\n⚠️ **Fase 3** — O canal pode ser criado agora, mas a entrega via WhatsApp requer o Baileys configurado."
+            "description": "Cria um canal WhatsApp. O canal é criado automaticamente com status `WARMING` e a sessão Baileys é iniciada em background.\n\n**Fluxo de onboarding:**\n1. Execute este endpoint → status `WARMING`, sessão inicia\n2. Abra o stream SSE em **GET /v1/channels/:id/qrcode** (ou use o mini-dashboard)\n3. Escaneie o QR Code com o WhatsApp no celular\n4. Status muda para `ACTIVE` automaticamente\n\n**Credentials para WHATSAPP:**\n```json\n{\n  \"phoneNumber\": \"+5595991234567\"  // opcional — apenas para identificação visual\n}\n```\nA autenticação real é feita via QR Code e salva em arquivos na pasta `whatsapp-sessions/`.\n\n**Perfil mínimo:** ADMIN"
           },
           "response": []
         },
@@ -641,6 +666,63 @@
               "path": ["v1", "channels", "{{channelId}}"]
             },
             "description": "Desativa um canal (soft delete — `status: INACTIVE`). O canal deixa de ser usado para novas entregas mas o histórico de tentativas é preservado."
+          },
+          "response": []
+        },
+        {
+          "name": "Listar Canais WhatsApp",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/channels?type=WHATSAPP",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "channels"],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "WHATSAPP",
+                  "description": "Filtrar por tipo de canal: EMAIL | WHATSAPP | TELEGRAM"
+                }
+              ]
+            },
+            "description": "Lista apenas os canais WhatsApp ativos da organização. Útil para obter os IDs antes de abrir o stream SSE ou acionar reconexão.\n\nO parâmetro `?type=` é opcional — sem ele lista todos os tipos. Valores aceitos: `EMAIL`, `WHATSAPP`, `TELEGRAM`.\n\n**Status possíveis de um canal WhatsApp:**\n- `WARMING` — aguardando scan do QR Code\n- `ACTIVE` — sessão autenticada e operacional\n- `DISCONNECTED` — sessão encerrada (reconexão disponível)\n- `BANNED` — número banido pelo WhatsApp\n\n**Perfil mínimo:** ADMIN"
+          },
+          "response": []
+        },
+        {
+          "name": "QR Code — Stream SSE",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Accept", "value": "text/event-stream", "type": "text" },
+              { "key": "Cache-Control", "value": "no-cache", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/channels/{{waChannelId}}/qrcode",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "channels", "{{waChannelId}}", "qrcode"]
+            },
+            "description": "Stream SSE (`text/event-stream`) que emite eventos de QR Code e mudanças de status da sessão WhatsApp em tempo real.\n\n⚠️ **O Postman não renderiza SSE nativamente.** Para testar, use:\n```bash\ncurl -N \\\n  -H \"Authorization: Bearer <token>\" \\\n  http://localhost:3000/v1/channels/{{waChannelId}}/qrcode\n```\nOu abra o **mini-dashboard** (`cd dashboard && npm run dev`) que exibe o QR Code visualmente.\n\n**Eventos emitidos:**\n```\n// Status atual da sessão (enviado imediatamente ao conectar)\ndata: {\"type\":\"status\",\"status\":\"WARMING\"}\n\n// Novo QR Code disponível para scan (refresh automático pelo Baileys)\ndata: {\"type\":\"qr\",\"data\":\"<string-bruto-do-qr>\"}\n\n// Sessão autenticada com sucesso\ndata: {\"type\":\"status\",\"status\":\"ACTIVE\"}\n\n// Sessão encerrada\ndata: {\"type\":\"status\",\"status\":\"DISCONNECTED\"}\n\n// Número banido\ndata: {\"type\":\"status\",\"status\":\"BANNED\"}\n\n// Keep-alive a cada 30s (não é um evento, é um comentário SSE)\n: keep-alive\n```\n\n**Comportamento especial:** se a sessão não estiver em memória (ex: restart do servidor), o endpoint inicia a sessão automaticamente antes de começar a emitir eventos.\n\n**Perfil mínimo:** ADMIN"
+          },
+          "response": []
+        },
+        {
+          "name": "Reconectar Sessão WhatsApp",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/channels/{{waChannelId}}/reconnect",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "channels", "{{waChannelId}}", "reconnect"]
+            },
+            "description": "Reinicia a sessão Baileys de um canal WhatsApp `DISCONNECTED` ou `BANNED`.\n\n**O que acontece internamente:**\n1. Canal é imediatamente atualizado para status `WARMING` no banco\n2. Sessão Baileys existente é encerrada silenciosamente (sem write espúrio de `DISCONNECTED`)\n3. Nova sessão é iniciada em background\n4. Um novo QR Code é gerado e emitido via SSE\n\n**Fluxo após o reconnect:**\n1. Execute este endpoint\n2. Abra **QR Code — Stream SSE** (ou o mini-dashboard)\n3. Escaneie o QR Code — canal volta para `ACTIVE`\n\n**Response:**\n```json\n{ \"message\": \"Reconexão iniciada. Aguarde o QR Code.\" }\n```\n\n**Retorna 400** se o canal não for do tipo `WHATSAPP`.\n\n**Perfil mínimo:** ADMIN"
           },
           "response": []
         },
