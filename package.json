@@ -21,7 +21,7 @@
     "@fastify/swagger": "^9.7.0",
     "@fastify/swagger-ui": "^5.2.6",
     "@prisma/client": "^5.22.0",
-    "@whiskeysockets/baileys": "^7.0.0-rc10",
+    "@whiskeysockets/baileys": "^6.7.21",
     "bcrypt": "^5.1.1",
     "bullmq": "^5.76.7",
     "dotenv": "^17.4.2",
