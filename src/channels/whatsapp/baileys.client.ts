@@ -63,10 +63,13 @@ export class BaileysClient extends EventEmitter {
     // fetchLatestBaileysVersion() was removed — just omit `version` from config.
     const socket = makeWASocket({
       auth: state,
-      browser: Browsers.ubuntu('Desktop'),
+      browser: Browsers.ubuntu('Chrome'),
       generateHighQualityLinkPreview: false,
       logger: makeSilentLogger(this.channelId),
-      // printQRInTerminal removed in v7 — handle QR via connection.update event
+      // Required for protocol-level message redelivery on reconnect.
+      // Without this, Baileys closes Signal sessions causing
+      // "Decrypted message with closed session" errors.
+      getMessage: async () => ({ conversation: '' }),
     })
     this.socket = socket
 
@@ -136,10 +139,12 @@ export class BaileysClient extends EventEmitter {
     const normalized = phone.replace(/\D/g, '')
     const jid = `${normalized}@s.whatsapp.net`
 
-    // Step 1 — Verify number is on WhatsApp.
-    // Three outcomes: exists=true (proceed), exists=false (block), error (propagate).
-    // We no longer swallow errors silently: an onWhatsApp failure should surface
-    // as a worker error so the notification is retried, not silently marked ENVIADO.
+    // Step 1 — Resolve JID via onWhatsApp.
+    // Critical: onWhatsApp returns the canonical JID from WhatsApp servers,
+    // which in Baileys v7 can be LID-based (e.g. 558512345678@lid instead of
+    // 5595991590235@s.whatsapp.net). Sending to the raw phone JID instead of
+    // the resolved JID causes messages to be silently dropped by WA routing.
+    let resolvedJid = jid
     let jidVerified = false
     try {
       const checks = await this.socket.onWhatsApp(jid)
@@ -147,23 +152,23 @@ export class BaileysClient extends EventEmitter {
       if (check?.exists === false) {
         throw new Error(`Número ${phone} não encontrado no WhatsApp (JID: ${jid})`)
       }
-      jidVerified = !!check?.exists
+      if (check?.exists && check.jid) {
+        resolvedJid = check.jid  // use canonical JID (may be LID in v7)
+        jidVerified = true
+      }
       console.log(
-        `[wa:${this.channelId}] onWhatsApp → jid=${jid} exists=${jidVerified}`
+        `[wa:${this.channelId}] onWhatsApp → raw=${jid} resolved=${resolvedJid} exists=${jidVerified}`
       )
     } catch (verifyErr) {
       const msg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr)
-      // Re-throw "not found" — this is definitive, the number has no WhatsApp
       if (msg.includes('não encontrado no WhatsApp')) throw verifyErr
-      // For other errors (timeout, LID issue, network) warn but proceed.
-      // The result.status check below will catch server-side rejections.
       console.warn(
-        `[wa:${this.channelId}] onWhatsApp error (${msg}) — prosseguindo sem verificação`
+        `[wa:${this.channelId}] onWhatsApp error (${msg}) — usando JID raw`
       )
     }
 
-    // Step 2 — Send the message
-    const result = await this.socket.sendMessage(jid, { text })
+    // Step 2 — Send to the resolved JID
+    const result = await this.socket.sendMessage(resolvedJid, { text })
 
     // Step 3 — Validate result: Baileys must return a message with an ID.
     // proto.WebMessageInfo.Status: 0=ERROR, 1=PENDING, 2=SERVER_ACK, 3=DELIVERY_ACK
@@ -180,7 +185,7 @@ export class BaileysClient extends EventEmitter {
     }
 
     console.log(
-      `[wa:${this.channelId}] sendMessage OK → jid=${jid} ` +
+      `[wa:${this.channelId}] sendMessage OK → resolvedJid=${resolvedJid} ` +
       `jidVerified=${jidVerified} msgId=${result.key.id} ` +
       `status=${result.status}(${waStatusLabel(result.status)})`
     )
