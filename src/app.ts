@@ -13,6 +13,7 @@ import { usersRoutes } from './http/routes/users'
 import { channelsRoutes } from './http/routes/channels'
 import { notificationsRoutes } from './http/routes/notifications'
 import { startNotificationWorker } from './workers/notification.worker'
+import { whatsappSessionManager } from './channels/whatsapp/session.manager'
 
 export async function buildApp() {
   const app = fastify({
@@ -73,6 +74,11 @@ export async function buildApp() {
   await app.register(notificationsRoutes, { prefix: '/v1' })
 
   startNotificationWorker()
+
+  // Restore WhatsApp sessions for existing WARMING/ACTIVE/DISCONNECTED channels
+  whatsappSessionManager.initialize().catch((err) =>
+    app.log.error({ err }, '[wa:manager] Falha ao inicializar sessões WhatsApp')
+  )
 
   return app
 }

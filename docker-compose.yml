@@ -4,6 +4,8 @@ services:
     ports:
       - "3000:3000"
     env_file: .env
+    environment:
+      - WA_SESSIONS_PATH=/app/sessions
     volumes:
       - ./whatsapp-sessions:/app/sessions
     depends_on:

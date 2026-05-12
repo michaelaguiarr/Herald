@@ -8,6 +8,8 @@ import { AppError } from '../errors/app-error'
 import { authenticate } from '../middlewares/authenticate'
 import { requireRole, buildEntityOrgFilter, assertOrgAccess } from '../middlewares/scope-guard'
 import { writeAuditLog } from '../../lib/audit'
+import { whatsappSessionManager } from '../../channels/whatsapp/session.manager'
+import type { WaSessionStatus } from '../../channels/whatsapp/baileys.client'
 
 const credentialsEmailSchema = z.object({
   host: z.string().min(1),
@@ -15,6 +17,10 @@ const credentialsEmailSchema = z.object({
   user: z.string().min(1),
   pass: z.string().min(1),
   from: z.string().min(1),
+})
+
+const credentialsWhatsappSchema = z.object({
+  phoneNumber: z.string().optional(),
 })
 
 const channelShape = z.object({
@@ -63,9 +69,13 @@ export async function channelsRoutes(fastify: FastifyInstance) {
 
       if (type === ChannelType.EMAIL) {
         credentialsEmailSchema.parse(credentials)
+      } else if (type === ChannelType.WHATSAPP) {
+        credentialsWhatsappSchema.parse(credentials)
       }
 
       const encryptedCredentials = { encrypted: encrypt(JSON.stringify(credentials)) }
+      const initialStatus =
+        type === ChannelType.WHATSAPP ? ChannelStatus.WARMING : ChannelStatus.ACTIVE
 
       const channel = await prisma.$transaction(async (tx) => {
         const created = await tx.channel.create({
@@ -76,6 +86,7 @@ export async function channelsRoutes(fastify: FastifyInstance) {
             credentials: encryptedCredentials,
             dailyLimit,
             hourlyLimit,
+            status: initialStatus,
           },
         })
         await writeAuditLog(
@@ -93,6 +104,12 @@ export async function channelsRoutes(fastify: FastifyInstance) {
         return created
       })
 
+      if (type === ChannelType.WHATSAPP) {
+        whatsappSessionManager.startSession(channel.id).catch((err) =>
+          console.error(`[channels] Falha ao iniciar sessão WA ${channel.id}:`, err)
+        )
+      }
+
       return reply.status(201).send(channel)
     }
   )
@@ -108,13 +125,20 @@ export async function channelsRoutes(fastify: FastifyInstance) {
         tags: ['Channels'],
         summary: 'Listar canais (filtrado por escopo)',
         security: [{ bearerAuth: [] }],
+        querystring: z.object({
+          type: z.nativeEnum(ChannelType).optional(),
+        }),
         response: { 200: z.array(channelShape) },
       },
     },
     async (request, reply) => {
       const filter = await buildEntityOrgFilter(request.user)
       const channels = await prisma.channel.findMany({
-        where: { ...(filter as object), status: { not: ChannelStatus.INACTIVE } },
+        where: {
+          ...(filter as object),
+          status: { not: ChannelStatus.INACTIVE },
+          ...(request.query.type && { type: request.query.type }),
+        },
         orderBy: [{ type: 'asc' }, { label: 'asc' }],
       })
       return reply.send(channels)
@@ -164,9 +188,7 @@ export async function channelsRoutes(fastify: FastifyInstance) {
           credentials: z.record(z.unknown()).optional(),
           dailyLimit: z.number().int().min(1).optional(),
           hourlyLimit: z.number().int().min(1).optional(),
-          status: z
-            .enum([ChannelStatus.ACTIVE, ChannelStatus.INACTIVE])
-            .optional(),
+          status: z.enum([ChannelStatus.ACTIVE, ChannelStatus.INACTIVE]).optional(),
         }),
         response: { 200: channelShape },
       },
@@ -188,6 +210,8 @@ export async function channelsRoutes(fastify: FastifyInstance) {
       if (credentials) {
         if (channel.type === ChannelType.EMAIL) {
           credentialsEmailSchema.parse(credentials)
+        } else if (channel.type === ChannelType.WHATSAPP) {
+          credentialsWhatsappSchema.parse(credentials)
         }
         credentialsUpdate = { encrypted: encrypt(JSON.stringify(credentials)) }
       }
@@ -260,7 +284,135 @@ export async function channelsRoutes(fastify: FastifyInstance) {
         )
       })
 
+      if (channel.type === ChannelType.WHATSAPP) {
+        await whatsappSessionManager.stopSession(id)
+      }
+
       return reply.send({ message: 'Canal desativado com sucesso.' })
+    }
+  )
+
+  // ── WhatsApp-specific endpoints ────────────────────────────────────────────
+
+  f.get(
+    '/channels/:id/qrcode',
+    {
+      onRequest: [
+        authenticate,
+        requireRole(UserRole.OWNER, UserRole.SUPER_ADMIN, UserRole.ADMIN),
+      ],
+      schema: {
+        tags: ['WhatsApp'],
+        summary: 'Stream de QR Code via SSE (text/event-stream)',
+        security: [{ bearerAuth: [] }],
+        params: z.object({ id: z.string().uuid() }),
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params
+      const actor = request.user
+
+      // Validate before hijacking so Fastify can still return error responses
+      const channel = await prisma.channel.findFirst({
+        where: { id, type: ChannelType.WHATSAPP, status: { not: ChannelStatus.INACTIVE } },
+      })
+      if (!channel) throw new AppError(404, 'Canal WhatsApp não encontrado')
+      await assertOrgAccess(actor, channel.organizationId)
+
+      reply.hijack()
+
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      })
+
+      const sendEvent = (data: object) => {
+        if (!reply.raw.writableEnded) {
+          reply.raw.write(`data: ${JSON.stringify(data)}\n\n`)
+        }
+      }
+
+      const session = whatsappSessionManager.getSession(id)
+
+      // Emit current status immediately so the client doesn't have to wait
+      sendEvent({ type: 'status', status: session?.status ?? 'DISCONNECTED' })
+
+      const qrHandler = (qrData: string) => sendEvent({ type: 'qr', data: qrData })
+      const statusHandler = (status: WaSessionStatus) => sendEvent({ type: 'status', status })
+
+      session?.on('qr', qrHandler)
+      session?.on('status-change', statusHandler)
+
+      const keepAlive = setInterval(() => {
+        if (!reply.raw.writableEnded) {
+          reply.raw.write(': keep-alive\n\n')
+        }
+      }, 30_000)
+
+      request.raw.once('close', () => {
+        clearInterval(keepAlive)
+        session?.off('qr', qrHandler)
+        session?.off('status-change', statusHandler)
+        if (!reply.raw.writableEnded) {
+          reply.raw.end()
+        }
+      })
+    }
+  )
+
+  f.post(
+    '/channels/:id/reconnect',
+    {
+      onRequest: [
+        authenticate,
+        requireRole(UserRole.OWNER, UserRole.SUPER_ADMIN, UserRole.ADMIN),
+      ],
+      schema: {
+        tags: ['WhatsApp'],
+        summary: 'Reconectar sessão WhatsApp',
+        security: [{ bearerAuth: [] }],
+        params: z.object({ id: z.string().uuid() }),
+        response: { 200: z.object({ message: z.string() }) },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params
+      const actor = request.user
+
+      const channel = await prisma.channel.findUnique({ where: { id } })
+      if (!channel || channel.status === ChannelStatus.INACTIVE) {
+        throw new AppError(404, 'Canal não encontrado')
+      }
+      if (channel.type !== ChannelType.WHATSAPP) {
+        throw new AppError(400, 'Reconexão disponível apenas para canais WhatsApp')
+      }
+
+      await assertOrgAccess(actor, channel.organizationId)
+
+      // Update DB to WARMING so SSE consumers see the state immediately
+      await prisma.channel.update({
+        where: { id },
+        data: { status: ChannelStatus.WARMING },
+      })
+
+      // Fire and forget — startSession calls disconnect(false) on existing session
+      // so the WARMING status above won't be overwritten by a stale DISCONNECTED event
+      whatsappSessionManager.startSession(id).catch((err) =>
+        console.error(`[channels] Falha ao reconectar WA ${id}:`, err)
+      )
+
+      await writeAuditLog({
+        userId: actor.sub,
+        organizationId: actor.organizationId,
+        action: 'CHANNEL_RECONNECT',
+        targetId: id,
+        targetType: 'channel',
+        ipAddress: request.ip,
+      })
+
+      return reply.send({ message: 'Reconexão iniciada. Aguarde o QR Code.' })
     }
   )
 
