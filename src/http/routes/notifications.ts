@@ -237,13 +237,18 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
 
       if (!notification) throw new AppError(404, 'Notificação não encontrada')
 
-      if (
-        notification.status !== NotificationStatus.FALHOU &&
-        notification.status !== NotificationStatus.FALHOU_DEFINITIVO
-      ) {
+      const retryableStatuses: NotificationStatus[] = [
+        NotificationStatus.FALHOU,
+        NotificationStatus.FALHOU_DEFINITIVO,
+        NotificationStatus.ENVIADO, // ENVIADO garante apenas que o Baileys não lançou erro,
+                                    // não que o destinatário recebeu — operador pode forçar reenvio
+      ]
+
+      if (!retryableStatuses.includes(notification.status)) {
         throw new AppError(
           400,
-          `Só é possível reenviar notificações com status FALHOU ou FALHOU_DEFINITIVO (atual: ${notification.status})`
+          `Não é possível reenviar uma notificação com status ${notification.status}. ` +
+            `Status permitidos: ${retryableStatuses.join(', ')}`
         )
       }
 
