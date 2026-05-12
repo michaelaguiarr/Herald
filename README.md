@@ -180,7 +180,7 @@ Worker tenta canal/número
 | Fase | Descrição                              | Status     |
 | ---- | -------------------------------------- | ---------- |
 | 1    | Fundação: auth, orgs, usuários         | ✅ Completa |
-| 2    | Entrega via Email + fila BullMQ        | 🔲 Pendente |
+| 2    | Entrega via Email + fila BullMQ        | ✅ Completa |
 | 3    | WhatsApp: Baileys + QR Code            | 🔲 Pendente |
 | 4    | Telegram + retry + alertas críticos    | 🔲 Pendente |
 | 5    | Anti-banimento + agendamento + broadcast | 🔲 Pendente |
