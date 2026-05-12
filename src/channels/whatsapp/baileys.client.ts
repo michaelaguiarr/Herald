@@ -135,6 +135,16 @@ export class BaileysClient extends EventEmitter {
 
     const normalized = phone.replace(/\D/g, '')
     const jid = `${normalized}@s.whatsapp.net`
+
+    // Verify the JID is registered on WhatsApp before sending.
+    // onWhatsApp returns an empty array for numbers that don't have WhatsApp.
+    const [check] = await this.socket.onWhatsApp(jid)
+    if (!check?.exists) {
+      throw new Error(
+        `Número ${phone} não encontrado no WhatsApp (JID: ${jid})`
+      )
+    }
+
     const result = await this.socket.sendMessage(jid, { text })
     console.log(
       `[wa:${this.channelId}] sendMessage → jid=${jid} ` +
