@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .env
+.idea/
+.vscode/
 whatsapp-sessions/*
 !whatsapp-sessions/.gitkeep
 *.log

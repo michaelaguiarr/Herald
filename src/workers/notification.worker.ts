@@ -1,10 +1,10 @@
 import 'dotenv/config'
 import { Worker } from 'bullmq'
-import { ChannelType, NotificationStatus } from '@prisma/client'
+import { NotificationStatus } from '@prisma/client'
 import { redis } from '../lib/redis'
 import { prisma } from '../lib/prisma'
-import { decrypt } from '../lib/crypto'
-import { sendViaEmail, EmailCredentials } from '../channels/email/nodemailer.client'
+import { selectChannel } from '../channels/channel-selector'
+import { dispatch } from '../channels/channel.dispatcher'
 import type { NotificationJobData } from '../queues/notification.queue'
 
 async function processNotification(notificationId: string) {
@@ -17,20 +17,13 @@ async function processNotification(notificationId: string) {
     return
   }
 
-  // Idempotency: skip if already processed
+  // Idempotency: skip if already processed by a concurrent worker
   if (notification.status !== NotificationStatus.PENDENTE) {
     console.log(`[worker] Notificação ${notificationId} já processada (${notification.status})`)
     return
   }
 
-  const channel = await prisma.channel.findFirst({
-    where: {
-      organizationId: notification.organizationId,
-      type: notification.channelType,
-      status: 'ACTIVE',
-    },
-    orderBy: { lastUsedAt: 'asc' }, // prefer least recently used
-  })
+  const channel = await selectChannel(notification.organizationId, notification.channelType)
 
   if (!channel) {
     await prisma.notification.update({
@@ -38,7 +31,8 @@ async function processNotification(notificationId: string) {
       data: { status: NotificationStatus.FALHOU },
     })
     console.error(
-      `[worker] Nenhum canal ${notification.channelType} ativo para org ${notification.organizationId}`
+      `[worker] Nenhum canal ${notification.channelType} elegível para org ${notification.organizationId} ` +
+        '(inativo, banido ou limites atingidos)'
     )
     return
   }
@@ -48,25 +42,8 @@ async function processNotification(notificationId: string) {
   let errorMessage: string | null = null
 
   try {
-    if (notification.channelType === ChannelType.EMAIL) {
-      const raw = channel.credentials as { encrypted: string }
-      const credentials = JSON.parse(decrypt(raw.encrypted)) as EmailCredentials
-
-      if (!notification.recipientEmail) {
-        throw new Error('recipientEmail ausente para canal EMAIL')
-      }
-
-      await sendViaEmail(
-        credentials,
-        notification.recipientEmail,
-        notification.recipientName,
-        notification.message
-      )
-      success = true
-    } else {
-      // WhatsApp and Telegram handled in Phase 3/4
-      throw new Error(`Canal ${notification.channelType} ainda não implementado`)
-    }
+    await dispatch(channel, notification)
+    success = true
   } catch (err) {
     errorMessage = err instanceof Error ? err.message : String(err)
     console.error(`[worker] Falha ao entregar notificação ${notificationId}:`, errorMessage)
@@ -106,10 +83,7 @@ export function startNotificationWorker() {
       console.log(`[worker] Processando job ${job.id} — notificação ${job.data.notificationId}`)
       await processNotification(job.data.notificationId)
     },
-    {
-      connection: redis,
-      concurrency: 5,
-    }
+    { connection: redis, concurrency: 5 }
   )
 
   worker.on('completed', (job) => {

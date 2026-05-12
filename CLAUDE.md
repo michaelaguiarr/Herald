@@ -252,3 +252,14 @@ npm run test:e2e      # end-to-end
 - Todas declaradas e validadas com Zod no startup (fail-fast)
 - Prefixo por domínio: `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `CRYPTO_KEY`
 - `.env.example` sempre atualizado com cada nova variável
+
+---
+
+## Dívidas Técnicas Documentadas
+
+| Item | Impacto | Resolver na |
+| ---- | ------- | ----------- |
+| `channel.sentToday` nunca é zerado | Rate limiting do Phase 5 bloqueará envios após o 1º dia | Fase 5 — criar job cron que zera `sentToday` à meia-noite |
+| `notificationQueue` com `attempts: 1` | Retry ciclos (1h/6h/24h) precisam de `attempts: 4` + backoff customizado | Fase 4 — atualizar `notification.queue.ts` e garantir idempotência |
+| `notification_attempt` sem canal disponível | Falha por "sem canal" não gera attempt (FK obrigatório) — rastreamento incompleto | Fase 4 — avaliar tornar `channelId` nullable ou criar tabela de eventos |
+| `POST /v1/notifications/send` usa JWT | API externa deveria usar `X-Api-Key` por organização | Fase 5 — implementar middleware de API Key e migrar autenticação desse endpoint |
