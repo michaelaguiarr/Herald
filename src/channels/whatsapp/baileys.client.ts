@@ -12,7 +12,6 @@ export type WaSessionStatus = 'WARMING' | 'ACTIVE' | 'DISCONNECTED' | 'BANNED'
 
 const RECONNECT_DELAY_MS = 5_000
 
-// Minimal logger to suppress Baileys internal noise
 const makeSilentLogger = (channelId: string) =>
   ({
     level: 'silent',
@@ -29,6 +28,7 @@ const makeSilentLogger = (channelId: string) =>
   }) as any
 
 export class BaileysClient extends EventEmitter {
+  // Kept public-readable for session.manager reconnect checks
   private socket: ReturnType<typeof makeWASocket> | null = null
   private _status: WaSessionStatus = 'WARMING'
   readonly channelId: string
@@ -55,7 +55,9 @@ export class BaileysClient extends EventEmitter {
     const { state, saveCreds } = await useMultiFileAuthState(this.sessionDir)
     const { version } = await fetchLatestBaileysVersion()
 
-    this.socket = makeWASocket({
+    // Capture local reference so that events from a replaced/disconnected socket
+    // are silently ignored — prevents spurious DB writes during reconnect.
+    const socket = makeWASocket({
       version,
       auth: state,
       printQRInTerminal: false,
@@ -63,10 +65,15 @@ export class BaileysClient extends EventEmitter {
       generateHighQualityLinkPreview: false,
       logger: makeSilentLogger(this.channelId),
     })
+    this.socket = socket
 
-    this.socket.ev.on('creds.update', saveCreds)
+    socket.ev.on('creds.update', saveCreds)
 
-    this.socket.ev.on('connection.update', (update) => {
+    socket.ev.on('connection.update', (update) => {
+      // FIX: if this.socket was replaced (null or new socket), the event came
+      // from a stale socket — ignore it to prevent phantom DISCONNECTED writes.
+      if (this.socket !== socket) return
+
       const { connection, lastDisconnect, qr } = update
 
       if (qr) {
@@ -82,7 +89,10 @@ export class BaileysClient extends EventEmitter {
           lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
         )?.output?.statusCode
 
-        if (statusCode === DisconnectReason.loggedOut || statusCode === DisconnectReason.forbidden) {
+        // FIX: only DisconnectReason.forbidden (403) is a genuine WhatsApp ban.
+        // loggedOut (401) means the user removed the device from their phone —
+        // the number is NOT banned and can be re-connected by scanning QR again.
+        if (statusCode === DisconnectReason.forbidden) {
           this.setStatus('BANNED')
           this._shouldReconnect = false
           return
@@ -103,20 +113,17 @@ export class BaileysClient extends EventEmitter {
 
   async disconnect(emitStatusChange = true): Promise<void> {
     this._shouldReconnect = false
-    if (this.socket) {
-      this.socket.end(undefined)
-      this.socket = null
+    const socket = this.socket
+    // Nullify before end() so any async close event from the socket
+    // sees this.socket !== socket and returns immediately.
+    this.socket = null
+    if (socket) {
+      socket.end(undefined)
     }
     this._status = 'DISCONNECTED'
     if (emitStatusChange) {
       this.emit('status-change', 'DISCONNECTED' as WaSessionStatus)
     }
-  }
-
-  async reconnect(): Promise<void> {
-    this._shouldReconnect = true
-    await this.disconnect(false)
-    await this.connect()
   }
 
   async sendMessage(phone: string, text: string): Promise<void> {

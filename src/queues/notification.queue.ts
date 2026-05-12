@@ -8,7 +8,8 @@ export interface NotificationJobData {
 export const notificationQueue = new Queue<NotificationJobData>('notifications', {
   connection: redis,
   defaultJobOptions: {
-    attempts: 1,       // Phase 4 adds retry cycles (1h/6h/24h)
+    attempts: 4,                 // 1 initial + 3 retry cycles (+1h / +6h / +24h)
+    backoff: { type: 'custom' }, // delays defined in the worker's backoffStrategy
     removeOnComplete: { count: 1000 },
     removeOnFail: { count: 5000 },
   },

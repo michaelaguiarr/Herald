@@ -334,10 +334,21 @@ export async function channelsRoutes(fastify: FastifyInstance) {
         }
       }
 
-      const session = whatsappSessionManager.getSession(id)
+      let session = whatsappSessionManager.getSession(id)
+
+      if (!session) {
+        // Session not in manager (e.g. server restart, failed initialize).
+        // startSession() is async but adds the client to the Map synchronously
+        // before its first await (client.connect()), so getSession() works right away.
+        // Workaround if this still returns undefined: call POST /reconnect first.
+        whatsappSessionManager.startSession(id).catch((err) =>
+          console.error(`[qrcode:sse] Falha ao iniciar sessão WA ${id}:`, err)
+        )
+        session = whatsappSessionManager.getSession(id)
+      }
 
       // Emit current status immediately so the client doesn't have to wait
-      sendEvent({ type: 'status', status: session?.status ?? 'DISCONNECTED' })
+      sendEvent({ type: 'status', status: session?.status ?? 'WARMING' })
 
       const qrHandler = (qrData: string) => sendEvent({ type: 'qr', data: qrData })
       const statusHandler = (status: WaSessionStatus) => sendEvent({ type: 'status', status })

@@ -2,23 +2,20 @@ import { Channel, ChannelStatus, ChannelType } from '@prisma/client'
 import { prisma } from '../lib/prisma'
 
 /**
- * Selects the best available channel from an org's pool for a given type.
- *
- * Rotation strategy (LRU): candidates are ordered by lastUsedAt ASC so the
- * least-recently-used channel is always tried first.
+ * Returns ALL eligible channels for an org+type, ordered LRU (least-recently-used first).
  *
  * Filters applied per candidate:
  *   1. status === ACTIVE
  *   2. sentToday < dailyLimit
  *   3. successful attempts in the last hour < hourlyLimit
  *
- * Returns null when no eligible channel exists (all limits exhausted or
- * no channel configured for the org).
+ * Used by the notification worker for pool rotation: try candidate 1, if it fails
+ * try candidate 2, etc., before giving up and scheduling a retry.
  */
-export async function selectChannel(
+export async function selectChannels(
   organizationId: string,
   channelType: ChannelType
-): Promise<Channel | null> {
+): Promise<Channel[]> {
   const candidates = await prisma.channel.findMany({
     where: {
       organizationId,
@@ -28,9 +25,10 @@ export async function selectChannel(
     orderBy: { lastUsedAt: 'asc' }, // LRU rotation
   })
 
-  if (candidates.length === 0) return null
+  if (candidates.length === 0) return []
 
   const hourAgo = new Date(Date.now() - 60 * 60 * 1000)
+  const eligible: Channel[] = []
 
   for (const channel of candidates) {
     if (channel.sentToday >= channel.dailyLimit) continue
@@ -43,10 +41,19 @@ export async function selectChannel(
       },
     })
 
-    if (sentLastHour >= channel.hourlyLimit) continue
-
-    return channel
+    if (sentLastHour < channel.hourlyLimit) {
+      eligible.push(channel)
+    }
   }
 
-  return null
+  return eligible
+}
+
+/** Convenience wrapper — returns the single best channel (first in LRU order). */
+export async function selectChannel(
+  organizationId: string,
+  channelType: ChannelType
+): Promise<Channel | null> {
+  const channels = await selectChannels(organizationId, channelType)
+  return channels[0] ?? null
 }
