@@ -6,6 +6,7 @@ import { prisma } from '../lib/prisma'
 import { selectChannels } from '../channels/channel-selector'
 import { dispatch } from '../channels/channel.dispatcher'
 import { enqueueAlert } from '../alerts/alert.service'
+import { writeAuditLog } from '../lib/audit'
 import type { NotificationJobData } from '../queues/notification.queue'
 
 // 3 retry cycles after the initial attempt: +1h → +6h → +24h
@@ -66,6 +67,19 @@ async function processNotification(notificationId: string, attemptsMade: number)
           `Canal: ${notification.channelType} | Motivo: sem canal elegível após ${attemptsMade} ciclo(s).`,
         notificationId
       )
+      writeAuditLog({
+        userId: null,
+        organizationId: notification.organizationId,
+        action: 'NOTIFICATION_FALHOU_DEFINITIVO',
+        targetId: notificationId,
+        targetType: 'notification',
+        metadata: {
+          retryCycle: attemptsMade,
+          channelType: notification.channelType,
+          reason: 'sem_canal_elegivel',
+          actor: 'system:notification_worker',
+        },
+      }).catch((err) => console.error('[worker] Falha ao gravar audit_log FALHOU_DEFINITIVO:', err))
     } else {
       await prisma.notification.update({
         where: { id: notificationId },
@@ -155,6 +169,20 @@ async function processNotification(notificationId: string, attemptsMade: number)
         `Último erro: ${lastError}`,
       notificationId
     )
+    writeAuditLog({
+      userId: null,
+      organizationId: notification.organizationId,
+      action: 'NOTIFICATION_FALHOU_DEFINITIVO',
+      targetId: notificationId,
+      targetType: 'notification',
+      metadata: {
+        retryCycle: attemptsMade,
+        channelType: notification.channelType,
+        reason: 'todos_canais_falharam',
+        lastError,
+        actor: 'system:notification_worker',
+      },
+    }).catch((err) => console.error('[worker] Falha ao gravar audit_log FALHOU_DEFINITIVO:', err))
   } else {
     await prisma.notification.update({
       where: { id: notificationId },

@@ -277,9 +277,13 @@ O histórico completo está nos commits — esta seção serve como referência 
 
 | Item | Impacto | Resolver na |
 | ---- | ------- | ----------- |
-| `channel.sentToday` nunca é zerado | Rate limiting do Phase 5 bloqueará envios após o 1º dia | Fase 5 — criar job cron que zera `sentToday` à meia-noite |
+| ~~`channel.sentToday` nunca é zerado~~ | ~~Rate limiting do Phase 5 bloqueará envios após o 1º dia~~ | ✅ Resolvido — cron `daily-reset-sent-today` (BullMQ, `0 0 * * *` UTC) em `scheduler.worker.ts` |
 | ~~`notificationQueue` com `attempts: 1`~~ | ~~Retry ciclos precisam de `attempts: 4` + backoff~~ | ✅ Resolvido — pré-Fase 4 |
 | `notification_attempt` sem canal disponível | Falha por "sem canal" não gera attempt (FK obrigatório) — rastreamento incompleto | Fase 4/5 — avaliar tornar `channelId` nullable ou criar tabela de eventos |
 | `POST /v1/notifications/send` usa JWT | API externa deveria usar `X-Api-Key` por organização | Fase 5 — implementar middleware de API Key e migrar autenticação desse endpoint |
 | SSE `/qrcode` com sessão ausente | Se `startSession()` lançar erro antes de adicionar ao Map, o stream SSE abre mas nunca recebe QR. Workaround: chamar `POST /channels/:id/reconnect` antes de abrir o stream. | Fase 5/6 — melhorar resiliência do startup de sessão |
 | `buildEntityOrgFilter` com cast `as object` | Em `channels.ts` e `notifications.ts`, o retorno de `buildEntityOrgFilter` é passado como `...(filter as object)` — escapa a checagem de tipo do Prisma. Se a assinatura do filtro mudar silenciosamente, queries podem omitir o escopo de organização sem erro de compilação. | Fase 6 — tipar corretamente o retorno de `buildEntityOrgFilter` com o tipo `Prisma.XxxWhereInput` adequado |
+| `daily-reset-sent-today` usa cron UTC | O job reseta `sent_today` à meia-noite UTC (cron `0 0 * * *`). Para operações no fuso Brasil (UTC-3 a UTC-5), o reset ocorre entre 20h-21h do dia anterior. Impacto: rate limiting diário pode permitir até ≈8h extras de envio antes do reset | Fase 5 — permitir configuração do fuso via `DAILY_RESET_TZ` env var |
+| `POST /v1/notifications/send` usa JWT | API externa deveria usar `X-Api-Key` por organização | Fase 5 — implementar middleware de API Key, tabela `api_key` no model `Organization`, manter JWT como fallback |
+| `scheduledAt` sem processamento | `notification.scheduledAt` existe no schema mas não há rota nem worker que crie delayed jobs a partir dele | Fase 5 — `POST /v1/notifications/schedule` com `notificationQueue.add(..., { delay })` |
+| Janela `sentToday` vs `sentLastHour` pós-reset | Após o reset (sentToday=0), `sentLastHour` ainda conta entregas da última hora — canal pode enviar além do `hourlyLimit` por ≈60 min logo após o reset | Monitorar em Fase 5; mitigação: rate limit horário é a proteção real |

@@ -4,10 +4,15 @@ import path from 'path'
 import { ChannelStatus, ChannelType } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { enqueueAlert } from '../../alerts/alert.service'
+import { writeAuditLog } from '../../lib/audit'
 import { BaileysClient, WaSessionStatus } from './baileys.client'
 
 const sessionsBasePath =
   process.env.WA_SESSIONS_PATH ?? path.join(process.cwd(), 'whatsapp-sessions')
+
+// How long a session must stay DISCONNECTED before we fire the alert.
+// Auto-reconnect fires after 5s — 2 minutes is enough to detect persistent failures.
+const DISCONNECT_ALERT_DELAY_MS = 2 * 60 * 1000
 
 const statusToDb: Record<WaSessionStatus, ChannelStatus> = {
   WARMING: ChannelStatus.WARMING,
@@ -27,6 +32,11 @@ class WhatsAppSessionManager {
   // Tracks channels whose startSession is currently in-flight to prevent
   // concurrent calls (e.g. SSE auto-start racing with /reconnect).
   private starting = new Set<string>()
+
+  // Debounce timers for SESSAO_DESCONECTADA alerts.
+  // A timer is started when a channel goes DISCONNECTED and cancelled if it
+  // recovers (ACTIVE / WARMING) before the delay expires.
+  private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   getChannelEmitter(channelId: string): EventEmitter {
     let emitter = this.channelEmitters.get(channelId)
@@ -66,7 +76,6 @@ class WhatsAppSessionManager {
     // Guard: skip if a start is already in progress for this channel
     if (this.starting.has(channelId)) {
       console.log(`[wa:manager] startSession ${channelId} já em andamento — ignorando chamada duplicada`)
-      // Return existing client (may still be connecting)
       const existing = this.sessions.get(channelId)
       if (existing) return existing
     }
@@ -109,6 +118,43 @@ class WhatsAppSessionManager {
 
         console.log(`[wa:session:${channelId}] → ${status}`)
 
+        // ── Debounce: SESSAO_DESCONECTADA alert ─────────────────────────────
+        // Cancel any existing timer whenever status changes.
+        const existingTimer = this.disconnectTimers.get(channelId)
+        if (existingTimer) {
+          clearTimeout(existingTimer)
+          this.disconnectTimers.delete(channelId)
+        }
+
+        if (status === 'DISCONNECTED') {
+          // Start timer — fires only if session doesn't recover within 2 minutes.
+          // Baileys auto-reconnects after 5s, so transient drops are filtered out.
+          const timer = setTimeout(async () => {
+            this.disconnectTimers.delete(channelId)
+            const current = await prisma.channel
+              .findUnique({ where: { id: channelId } })
+              .catch(() => null)
+            if (current?.status === ChannelStatus.DISCONNECTED) {
+              enqueueAlert(
+                'SESSAO_DESCONECTADA',
+                current.organizationId,
+                `Sessão WhatsApp <b>${current.label}</b> está desconectada há mais de 2 minutos sem reconexão automática.`,
+                channelId
+              )
+              writeAuditLog({
+                userId: null,
+                organizationId: current.organizationId,
+                action: 'WHATSAPP_SESSAO_DESCONECTADA',
+                targetId: channelId,
+                targetType: 'channel',
+                metadata: { label: current.label, actor: 'system:whatsapp_session_manager' },
+              }).catch((err) => console.error('[wa:manager] Falha ao gravar audit_log SESSAO_DESCONECTADA:', err))
+            }
+          }, DISCONNECT_ALERT_DELAY_MS)
+          this.disconnectTimers.set(channelId, timer)
+        }
+
+        // ── BANNED: alert + audit_log ────────────────────────────────────────
         if (status === 'BANNED' && channel) {
           enqueueAlert(
             'NUMERO_BANIDO',
@@ -117,6 +163,14 @@ class WhatsAppSessionManager {
               `Configure um número substituto e atualize o canal.`,
             channelId
           )
+          writeAuditLog({
+            userId: null,
+            organizationId: channel.organizationId,
+            action: 'WHATSAPP_BANNED',
+            targetId: channelId,
+            targetType: 'channel',
+            metadata: { label: channel.label, actor: 'system:whatsapp_session_manager' },
+          }).catch((err) => console.error('[wa:manager] Falha ao gravar audit_log WHATSAPP_BANNED:', err))
         }
       })
 
@@ -128,6 +182,13 @@ class WhatsAppSessionManager {
   }
 
   async stopSession(channelId: string): Promise<void> {
+    // Cancel disconnect alert timer before stopping to avoid phantom alerts
+    const timer = this.disconnectTimers.get(channelId)
+    if (timer) {
+      clearTimeout(timer)
+      this.disconnectTimers.delete(channelId)
+    }
+
     const session = this.sessions.get(channelId)
     if (session) {
       await session.disconnect(false)

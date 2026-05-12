@@ -2,7 +2,8 @@ import { Prisma } from '@prisma/client'
 import { prisma } from './prisma'
 
 interface AuditParams {
-  userId: string
+  /** null for system-generated events (worker, session manager, cron jobs) */
+  userId: string | null
   organizationId?: string | null
   action: string
   targetId?: string | null
@@ -18,7 +19,7 @@ export async function writeAuditLog(
   const client = tx ?? prisma
   await client.auditLog.create({
     data: {
-      userId: params.userId,
+      userId: params.userId ?? null,
       organizationId: params.organizationId ?? null,
       action: params.action,
       targetId: params.targetId ?? null,
