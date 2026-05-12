@@ -727,6 +727,28 @@
           "response": []
         },
         {
+          "name": "[Dev] Testar Envio WhatsApp",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"5595991590235\",\n  \"message\": \"Teste Herald — pode ignorar esta mensagem.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/channels/{{waChannelId}}/test-message",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "channels", "{{waChannelId}}", "test-message"]
+            },
+            "description": "⚠️ **Apenas para desenvolvimento** — diagnóstico completo de um envio WhatsApp: verifica JID, detecta LID, envia mensagem de teste e retorna o status retornado pelo Baileys. Retorna 403 em produção.\n\n**Perfil necessário:** OWNER\n\n**Body:**\n```json\n{\n  \"phone\": \"5595991590235\",      // sem + ou espaços\n  \"message\": \"Mensagem de teste\"  // omitir para só verificar JID sem enviar\n}\n```\n\n**Response — número não está no WhatsApp:**\n```json\n{\n  \"channelStatus\": \"ACTIVE\",\n  \"jid\": \"5595991590235@s.whatsapp.net\",\n  \"exists\": false,\n  \"messageSent\": false\n}\n```\n\n**Response — envio bem-sucedido:**\n```json\n{\n  \"channelStatus\": \"ACTIVE\",\n  \"jid\": \"5595991590235@s.whatsapp.net\",\n  \"exists\": true,\n  \"messageSent\": true,\n  \"messageStatus\": 1,\n  \"messageStatusLabel\": \"SERVER_ACK (✓ servidor recebeu)\"\n}\n```\n\n**Valores de `messageStatus`:**\n- `0` → ERROR — WA server rejeitou\n- `1` → PENDING — aceito pelo Baileys\n- `2` → SERVER_ACK — servidor WA confirmou (✓)\n- `3` → DELIVERY_ACK — entregue ao dispositivo (✓✓)"
+          },
+          "response": []
+        },
+        {
           "name": "[Dev] Ver Credenciais Descriptografadas",
           "request": {
             "method": "GET",
@@ -878,7 +900,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["v1", "notifications", "{{notificationId}}", "retry"]
             },
-            "description": "Reenvia manualmente uma notificação que está em status `FALHOU` ou `FALHOU_DEFINITIVO`. O status é resetado para `PENDENTE` e um novo job é enfileirado no BullMQ.\n\nRetorna 400 se a notificação não estiver em estado de falha.\n\n**Perfis permitidos:** OWNER, SUPER_ADMIN, ADMIN, OPERATOR"
+            "description": "Reenvia manualmente uma notificação que está nos status `FALHOU`, `FALHOU_DEFINITIVO` ou `ENVIADO`. O status é resetado para `PENDENTE`, `retryCycle` zerado e um novo job é enfileirado no BullMQ.\n\n**`ENVIADO` também é aceito** porque esse status indica apenas que o Baileys não lançou exceção no envio — não garante que o destinatário recebeu. O operador pode forçar reenvio quando confirmar que a mensagem não chegou.\n\nRetorna 400 para status `PENDENTE`, `AGENDADO` ou `CANCELADO`.\n\n**Perfis permitidos:** OWNER, SUPER_ADMIN, ADMIN, OPERATOR"
           },
           "response": []
         }

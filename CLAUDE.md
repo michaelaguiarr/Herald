@@ -255,6 +255,24 @@ npm run test:e2e      # end-to-end
 
 ---
 
+## Bug Fixes Aplicados (Fase 3)
+
+Bugs encontrados e corrigidos durante a implementação e testes da Fase 3.
+O histórico completo está nos commits — esta seção serve como referência rápida.
+
+| Bug | Causa | Correção aplicada |
+| --- | ----- | ----------------- |
+| **BANNED detection incorreta** | `loggedOut (401)` era mapeado para BANNED, mas significa logout voluntário pelo celular — não banimento | `loggedOut` → DISCONNECTED (pode reconectar via QR); apenas `forbidden (403)` → BANNED |
+| **Race condition no reconnect** | `disconnect()` chamava `socket.end()` e o evento `connection.update: close` chegava assincronamente, gravando DISCONNECTED no DB após o status WARMING já ter sido setado pelo `/reconnect` | Socket capturado em variável local no closure de `connect()`; handler verifica `this.socket !== socket` antes de processar — eventos de socket substituído são descartados |
+| **JID resolution (LID)** | `onWhatsApp()` retorna `results[0].jid` com o JID canônico do WA que em Baileys v7 pode ser LID-based (`@lid`); enviávamos para o JID raw (`@s.whatsapp.net`) e a mensagem era descartada silenciosamente | `resolvedJid = check.jid \|\| jid` — usa sempre o JID retornado pelo WA |
+| **`getMessage` ausente no socket config** | Sem `getMessage`, Baileys falha ao tentar recuperar mensagens pendentes no reconnect, fecha sessões Signal e gera `Decrypted message with closed session` em loop | Adicionado `getMessage: async () => ({ conversation: '' })` ao `makeWASocket` |
+| **Baileys v7 + Node.js v26 incompatibilidade** | `whatsapp-rust-bridge@0.5.3` só exporta condição `"import"` (ESM); Node.js v26 + tsx CJS register lança `ERR_PACKAGE_PATH_NOT_EXPORTED` | Patch `patches/whatsapp-rust-bridge+0.5.3.patch` adiciona `"default": "./dist/index.js"`; `patch-package` aplica automaticamente no `postinstall`; `tsconfig.json` migrado para `NodeNext` |
+| **`result.status` ignorado no envio** | `socket.sendMessage()` retornava sem exceção mesmo quando WA server rejeitava (`status=0 ERROR`) ou quando Baileys não gerava ID de mensagem — worker marcava ENVIADO incondicionalmente | Verificações adicionadas: `!result?.key?.id` → lança erro; `result.status === 0` → lança erro com mensagem explícita |
+| **`onWhatsApp` bypassado silenciosamente** | Bloco try/catch engolia qualquer exceção de `onWhatsApp` que não fosse exatamente "não encontrado" — número inválido ou erros de sessão faziam o envio prosseguir sem verificação | Erro "não encontrado" re-lançado; demais erros logam `raw=` e `resolved=` para diagnóstico; envio prossegue mas com aviso explícito no log |
+| **Retry bloqueado para status ENVIADO** | Endpoint `/retry` só aceitava `FALHOU` ou `FALHOU_DEFINITIVO`; após ENVIADO sem entrega real o operador não conseguia reenviar | `ENVIADO` adicionado à lista de statuses retentáveis — ENVIADO confirma apenas que Baileys não lançou exceção, não que o destinatário recebeu |
+
+---
+
 ## Dívidas Técnicas Documentadas
 
 | Item | Impacto | Resolver na |
