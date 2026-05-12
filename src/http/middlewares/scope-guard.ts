@@ -27,13 +27,18 @@ export function buildOrgFilter(user: {
   return { id: user.organizationId ?? '' }
 }
 
-// Returns a Prisma-typed WHERE clause scoping notifications/channels by organizationId.
+// Plain filter shape that works as a spread into any Prisma model with organizationId.
 // SUPER_ADMIN sees their paróquia AND all its child comunidades.
 // Must be awaited — queries DB to resolve child org IDs for SUPER_ADMIN.
+export type OrgScopeFilter =
+  | Record<string, never>
+  | { organizationId: string }
+  | { organizationId: { in: string[] } }
+
 export async function buildEntityOrgFilter(user: {
   role: UserRole
   organizationId: string | null
-}): Promise<Prisma.NotificationWhereInput | Prisma.ChannelWhereInput> {
+}): Promise<OrgScopeFilter> {
   if (user.role === UserRole.OWNER) {
     return {}
   }

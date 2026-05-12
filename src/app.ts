@@ -10,6 +10,9 @@ import { errorHandler } from './http/errors/handler'
 import { authRoutes } from './http/routes/auth'
 import { organizationsRoutes } from './http/routes/organizations'
 import { usersRoutes } from './http/routes/users'
+import { channelsRoutes } from './http/routes/channels'
+import { notificationsRoutes } from './http/routes/notifications'
+import { startNotificationWorker } from './workers/notification.worker'
 
 export async function buildApp() {
   const app = fastify({
@@ -66,6 +69,10 @@ export async function buildApp() {
   await app.register(authRoutes, { prefix: '/v1' })
   await app.register(organizationsRoutes, { prefix: '/v1' })
   await app.register(usersRoutes, { prefix: '/v1' })
+  await app.register(channelsRoutes, { prefix: '/v1' })
+  await app.register(notificationsRoutes, { prefix: '/v1' })
+
+  startNotificationWorker()
 
   return app
 }
