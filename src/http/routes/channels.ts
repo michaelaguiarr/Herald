@@ -334,27 +334,28 @@ export async function channelsRoutes(fastify: FastifyInstance) {
         }
       }
 
-      let session = whatsappSessionManager.getSession(id)
-
-      if (!session) {
-        // Session not in manager (e.g. server restart, failed initialize).
-        // startSession() is async but adds the client to the Map synchronously
-        // before its first await (client.connect()), so getSession() works right away.
-        // Workaround if this still returns undefined: call POST /reconnect first.
+      // If session isn't loaded yet (e.g. server restart), start it now.
+      // startSession() adds the client to the Map synchronously before its first
+      // await, so getSession() works right after without waiting.
+      if (!whatsappSessionManager.getSession(id)) {
         whatsappSessionManager.startSession(id).catch((err) =>
           console.error(`[qrcode:sse] Falha ao iniciar sessão WA ${id}:`, err)
         )
-        session = whatsappSessionManager.getSession(id)
       }
 
-      // Emit current status immediately so the client doesn't have to wait
-      sendEvent({ type: 'status', status: session?.status ?? 'WARMING' })
+      // Subscribe to the channel-level emitter — it outlives individual BaileysClient
+      // instances, so events keep arriving even after /reconnect replaces the session.
+      const emitter = whatsappSessionManager.getChannelEmitter(id)
+
+      // Send current status immediately so the client doesn't have to wait
+      const currentSession = whatsappSessionManager.getSession(id)
+      sendEvent({ type: 'status', status: currentSession?.status ?? 'WARMING' })
 
       const qrHandler = (qrData: string) => sendEvent({ type: 'qr', data: qrData })
       const statusHandler = (status: WaSessionStatus) => sendEvent({ type: 'status', status })
 
-      session?.on('qr', qrHandler)
-      session?.on('status-change', statusHandler)
+      emitter.on('qr', qrHandler)
+      emitter.on('status-change', statusHandler)
 
       const keepAlive = setInterval(() => {
         if (!reply.raw.writableEnded) {
@@ -364,8 +365,8 @@ export async function channelsRoutes(fastify: FastifyInstance) {
 
       request.raw.once('close', () => {
         clearInterval(keepAlive)
-        session?.off('qr', qrHandler)
-        session?.off('status-change', statusHandler)
+        emitter.off('qr', qrHandler)
+        emitter.off('status-change', statusHandler)
         if (!reply.raw.writableEnded) {
           reply.raw.end()
         }

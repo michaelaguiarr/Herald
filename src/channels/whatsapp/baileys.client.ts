@@ -135,6 +135,10 @@ export class BaileysClient extends EventEmitter {
 
     const normalized = phone.replace(/\D/g, '')
     const jid = `${normalized}@s.whatsapp.net`
-    await this.socket.sendMessage(jid, { text })
+    const result = await this.socket.sendMessage(jid, { text })
+    console.log(
+      `[wa:${this.channelId}] sendMessage → jid=${jid} ` +
+        `msgId=${result?.key?.id} status=${result?.status}`
+    )
   }
 }
