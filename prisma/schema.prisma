@@ -1,0 +1,150 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrgType {
+  PAROQUIA
+  COMUNIDADE
+}
+
+enum UserRole {
+  OWNER
+  SUPER_ADMIN
+  ADMIN
+  OPERATOR
+}
+
+enum ChannelType {
+  WHATSAPP
+  EMAIL
+  TELEGRAM
+}
+
+enum ChannelStatus {
+  ACTIVE
+  INACTIVE
+  BANNED
+  WARMING
+  DISCONNECTED
+}
+
+enum NotificationStatus {
+  PENDENTE
+  ENVIADO
+  FALHOU
+  FALHOU_DEFINITIVO
+  AGENDADO
+  CANCELADO
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  type      OrgType
+  parentId  String?  @map("parent_id")
+  parent    Organization?  @relation("OrgHierarchy", fields: [parentId], references: [id])
+  children  Organization[] @relation("OrgHierarchy")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  users         User[]
+  channels      Channel[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+
+  @@map("organization")
+}
+
+model User {
+  id            String        @id @default(uuid())
+  organizationId String?      @map("organization_id")
+  organization  Organization? @relation(fields: [organizationId], references: [id])
+  name          String
+  email         String        @unique
+  passwordHash  String        @map("password_hash")
+  role          UserRole
+  telegramId    String?       @map("telegram_id")
+  active        Boolean       @default(true)
+  resetToken    String?       @map("reset_token")
+  resetTokenExp DateTime?     @map("reset_token_exp")
+  lastLoginAt   DateTime?     @map("last_login_at")
+  createdAt     DateTime      @default(now()) @map("created_at")
+
+  auditLogs AuditLog[]
+
+  @@map("user")
+}
+
+model Channel {
+  id             String        @id @default(uuid())
+  organizationId String        @map("organization_id")
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  type           ChannelType
+  label          String
+  credentials    Json
+  status         ChannelStatus @default(ACTIVE)
+  dailyLimit     Int           @default(200) @map("daily_limit")
+  hourlyLimit    Int           @default(30) @map("hourly_limit")
+  sentToday      Int           @default(0) @map("sent_today")
+  lastUsedAt     DateTime?     @map("last_used_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+
+  attempts NotificationAttempt[]
+
+  @@map("channel")
+}
+
+model Notification {
+  id                  String             @id @default(uuid())
+  organizationId      String             @map("organization_id")
+  organization        Organization       @relation(fields: [organizationId], references: [id])
+  channelType         ChannelType        @map("channel_type")
+  recipientName       String             @map("recipient_name")
+  recipientPhone      String?            @map("recipient_phone")
+  recipientEmail      String?            @map("recipient_email")
+  recipientTelegramId String?            @map("recipient_telegram_id")
+  message             String
+  status              NotificationStatus @default(PENDENTE)
+  scheduledAt         DateTime?          @map("scheduled_at")
+  sentAt              DateTime?          @map("sent_at")
+  retryCycle          Int                @default(0) @map("retry_cycle")
+  createdAt           DateTime           @default(now()) @map("created_at")
+
+  attempts NotificationAttempt[]
+
+  @@map("notification")
+}
+
+model NotificationAttempt {
+  id             String       @id @default(uuid())
+  notificationId String       @map("notification_id")
+  notification   Notification @relation(fields: [notificationId], references: [id])
+  channelId      String       @map("channel_id")
+  channel        Channel      @relation(fields: [channelId], references: [id])
+  attemptedAt    DateTime     @map("attempted_at")
+  success        Boolean
+  errorMessage   String?      @map("error_message")
+
+  @@map("notification_attempt")
+}
+
+model AuditLog {
+  id             String        @id @default(uuid())
+  userId         String        @map("user_id")
+  user           User          @relation(fields: [userId], references: [id])
+  organizationId String?       @map("organization_id")
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  action         String
+  targetId       String?       @map("target_id")
+  targetType     String?       @map("target_type")
+  metadata       Json?
+  ipAddress      String?       @map("ip_address")
+  createdAt      DateTime      @default(now()) @map("created_at")
+
+  @@map("audit_log")
+}
