@@ -27,14 +27,28 @@ export function buildOrgFilter(user: {
   return { id: user.organizationId ?? '' }
 }
 
-// Returns the organizationId filter for notification/channel queries
-export function buildEntityOrgFilter(user: {
+// Returns a Prisma-typed WHERE clause scoping notifications/channels by organizationId.
+// SUPER_ADMIN sees their paróquia AND all its child comunidades.
+// Must be awaited — queries DB to resolve child org IDs for SUPER_ADMIN.
+export async function buildEntityOrgFilter(user: {
   role: UserRole
   organizationId: string | null
-}): { organizationId?: string } {
+}): Promise<Prisma.NotificationWhereInput | Prisma.ChannelWhereInput> {
   if (user.role === UserRole.OWNER) {
     return {}
   }
+
+  if (user.role === UserRole.SUPER_ADMIN) {
+    const paroquiaId = user.organizationId ?? ''
+    const comunidades = await prisma.organization.findMany({
+      where: { parentId: paroquiaId, active: true },
+      select: { id: true },
+    })
+    const orgIds = [paroquiaId, ...comunidades.map((c) => c.id)]
+    return { organizationId: { in: orgIds } }
+  }
+
+  // ADMIN, OPERATOR — apenas a própria comunidade
   return { organizationId: user.organizationId ?? '' }
 }
 

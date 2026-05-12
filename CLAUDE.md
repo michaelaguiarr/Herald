@@ -41,7 +41,7 @@ Setup, autenticação e gestão de usuários/organizações.
 - CRUD de usuários com hierarquia de criação
 - Middleware de isolamento por `organization_id`
 - Swagger/OpenAPI habilitado
-/
+
 ### Fase 2 — Entrega via Email e Fila
 Fluxo principal de notificação com o canal mais simples.
 

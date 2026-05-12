@@ -1,7 +1,8 @@
 node_modules/
 dist/
 .env
-whatsapp-sessions/
+whatsapp-sessions/*
+!whatsapp-sessions/.gitkeep
 *.log
 .DS_Store
 prisma/dev.db
