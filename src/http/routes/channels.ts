@@ -23,6 +23,10 @@ const credentialsWhatsappSchema = z.object({
   phoneNumber: z.string().optional(),
 })
 
+const credentialsTelegramSchema = z.object({
+  botToken: z.string().min(20, 'Bot token inválido (mínimo 20 caracteres)'),
+})
+
 const channelShape = z.object({
   id: z.string(),
   organizationId: z.string(),
@@ -71,6 +75,8 @@ export async function channelsRoutes(fastify: FastifyInstance) {
         credentialsEmailSchema.parse(credentials)
       } else if (type === ChannelType.WHATSAPP) {
         credentialsWhatsappSchema.parse(credentials)
+      } else if (type === ChannelType.TELEGRAM) {
+        credentialsTelegramSchema.parse(credentials)
       }
 
       const encryptedCredentials = { encrypted: encrypt(JSON.stringify(credentials)) }
@@ -212,6 +218,8 @@ export async function channelsRoutes(fastify: FastifyInstance) {
           credentialsEmailSchema.parse(credentials)
         } else if (channel.type === ChannelType.WHATSAPP) {
           credentialsWhatsappSchema.parse(credentials)
+        } else if (channel.type === ChannelType.TELEGRAM) {
+          credentialsTelegramSchema.parse(credentials)
         }
         credentialsUpdate = { encrypted: encrypt(JSON.stringify(credentials)) }
       }

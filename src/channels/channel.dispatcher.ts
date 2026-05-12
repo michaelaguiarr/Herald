@@ -2,6 +2,7 @@ import { Channel, ChannelType, Notification } from '@prisma/client'
 import { decrypt } from '../lib/crypto'
 import { sendViaEmail, EmailCredentials } from './email/nodemailer.client'
 import { whatsappSessionManager } from './whatsapp/session.manager'
+import { sendViaTelegram, TelegramCredentials } from './telegram/telegram.client'
 
 export async function dispatch(channel: Channel, notification: Notification): Promise<void> {
   const raw = channel.credentials as { encrypted: string }
@@ -33,9 +34,17 @@ export async function dispatch(channel: Channel, notification: Notification): Pr
       break
     }
 
-    case ChannelType.TELEGRAM:
-      // Phase 4 — node-telegram-bot-api
-      throw new Error('Canal TELEGRAM ainda não implementado')
+    case ChannelType.TELEGRAM: {
+      if (!notification.recipientTelegramId) {
+        throw new Error('recipientTelegramId ausente para canal TELEGRAM')
+      }
+      await sendViaTelegram(
+        credentials as unknown as TelegramCredentials,
+        notification.recipientTelegramId,
+        notification.message
+      )
+      break
+    }
 
     default:
       throw new Error(`Tipo de canal desconhecido: ${channel.type}`)

@@ -13,6 +13,7 @@ import { usersRoutes } from './http/routes/users'
 import { channelsRoutes } from './http/routes/channels'
 import { notificationsRoutes } from './http/routes/notifications'
 import { startNotificationWorker } from './workers/notification.worker'
+import { startAlertWorker } from './workers/alert.worker'
 import { whatsappSessionManager } from './channels/whatsapp/session.manager'
 
 export async function buildApp() {
@@ -74,6 +75,7 @@ export async function buildApp() {
   await app.register(notificationsRoutes, { prefix: '/v1' })
 
   startNotificationWorker()
+  startAlertWorker()
 
   // Restore WhatsApp sessions for existing WARMING/ACTIVE/DISCONNECTED channels
   whatsappSessionManager.initialize().catch((err) =>

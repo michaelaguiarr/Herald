@@ -5,6 +5,7 @@ import { redis } from '../lib/redis'
 import { prisma } from '../lib/prisma'
 import { selectChannels } from '../channels/channel-selector'
 import { dispatch } from '../channels/channel.dispatcher'
+import { enqueueAlert } from '../alerts/alert.service'
 import type { NotificationJobData } from '../queues/notification.queue'
 
 // 3 retry cycles after the initial attempt: +1h → +6h → +24h
@@ -58,6 +59,13 @@ async function processNotification(notificationId: string, attemptsMade: number)
         where: { id: notificationId },
         data: { status: NotificationStatus.FALHOU_DEFINITIVO, retryCycle: attemptsMade },
       })
+      enqueueAlert(
+        'FALHOU_DEFINITIVO',
+        notification.organizationId,
+        `Notificação para <b>${notification.recipientName}</b> falhou definitivamente.\n` +
+          `Canal: ${notification.channelType} | Motivo: sem canal elegível após ${attemptsMade} ciclo(s).`,
+        notificationId
+      )
     } else {
       await prisma.notification.update({
         where: { id: notificationId },
@@ -138,6 +146,14 @@ async function processNotification(notificationId: string, attemptsMade: number)
     console.error(
       `[worker] FALHOU_DEFINITIVO ${notificationId}: todos os canais falharam ` +
         `após ${attemptsMade} ciclo(s) de retry`
+    )
+    enqueueAlert(
+      'FALHOU_DEFINITIVO',
+      notification.organizationId,
+      `Notificação para <b>${notification.recipientName}</b> falhou definitivamente.\n` +
+        `Canal: ${notification.channelType} | Todos os canais falharam após ${attemptsMade} ciclo(s).\n` +
+        `Último erro: ${lastError}`,
+      notificationId
     )
   } else {
     await prisma.notification.update({

@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { ChannelStatus, ChannelType } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
+import { enqueueAlert } from '../../alerts/alert.service'
 import { BaileysClient, WaSessionStatus } from './baileys.client'
 
 const sessionsBasePath =
@@ -96,15 +97,27 @@ class WhatsAppSessionManager {
       client.on('status-change', async (status: WaSessionStatus) => {
         emitter.emit('status-change', status)
 
-        await prisma.channel
+        const channel = await prisma.channel
           .update({
             where: { id: channelId },
             data: { status: statusToDb[status] },
           })
-          .catch((err) =>
+          .catch((err) => {
             console.error(`[wa:manager] Falha ao atualizar status ${channelId}:`, err)
-          )
+            return null
+          })
+
         console.log(`[wa:session:${channelId}] → ${status}`)
+
+        if (status === 'BANNED' && channel) {
+          enqueueAlert(
+            'NUMERO_BANIDO',
+            channel.organizationId,
+            `O número WhatsApp <b>${channel.label}</b> foi banido pelo WhatsApp.\n` +
+              `Configure um número substituto e atualize o canal.`,
+            channelId
+          )
+        }
       })
 
       await client.connect()
