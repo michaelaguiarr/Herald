@@ -1,0 +1,806 @@
+{
+  "info": {
+    "_postman_id": "a8f3d2c1-b4e5-4f6a-8901-23456789abcd",
+    "name": "Herald API",
+    "description": "Coleção completa da Herald API — Serviço de notificações multi-canal para paróquias e comunidades.\n\n## Como usar\n1. Execute **Auth › Login** para obter o token (salvo automaticamente em `{{token}}`)\n2. Crie uma paróquia em **Organizations › Criar Paróquia** — `{{orgId}}` é salvo automaticamente\n3. Crie uma comunidade em **Organizations › Criar Comunidade** — `{{comunidadeId}}` é salvo\n4. Siga o fluxo: Users → Channels → Notifications\n\n## Hierarquia de perfis\n```\nOWNER → cria SUPER_ADMIN\nSUPER_ADMIN → cria ADMIN (própria paróquia)\nADMIN → cria OPERATOR (própria comunidade)\n```\n\n## Variáveis\n| Variável | Descrição |\n|---|---|\n| `baseUrl` | URL base da API |\n| `token` | JWT salvo automaticamente no login |\n| `orgId` | ID da paróquia (salvo ao criar) |\n| `comunidadeId` | ID da comunidade (salvo ao criar) |\n| `userId` | ID do último usuário criado |\n| `channelId` | ID do último canal criado |\n| `notificationId` | ID da última notificação enviada |",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string",
+      "description": "URL base da API. Altere para o endereço de produção quando necessário."
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string",
+      "description": "JWT preenchido automaticamente pelo script do endpoint Login."
+    },
+    {
+      "key": "orgId",
+      "value": "",
+      "type": "string",
+      "description": "ID da paróquia. Preenchido automaticamente ao criar uma paróquia."
+    },
+    {
+      "key": "comunidadeId",
+      "value": "",
+      "type": "string",
+      "description": "ID da comunidade. Preenchido automaticamente ao criar uma comunidade."
+    },
+    {
+      "key": "userId",
+      "value": "",
+      "type": "string",
+      "description": "ID do último usuário criado."
+    },
+    {
+      "key": "channelId",
+      "value": "",
+      "type": "string",
+      "description": "ID do último canal criado."
+    },
+    {
+      "key": "notificationId",
+      "value": "",
+      "type": "string",
+      "description": "ID da última notificação enviada."
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "description": "Autenticação e gestão de senhas. O token retornado no login é salvo automaticamente em `{{token}}`.",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('token', body.token);",
+                  "    pm.collectionVariables.set('userId', body.user.id);",
+                  "    console.log('✅ Token salvo | Perfil: ' + body.user.role + ' | Org: ' + body.user.organizationId);",
+                  "} else {",
+                  "    console.error('❌ Login falhou:', pm.response.json().message);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@herald.app\",\n  \"password\": \"Admin@1234\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "auth", "login"]
+            },
+            "description": "Autentica o usuário e retorna um JWT com expiração de 8h. O token e o userId são salvos automaticamente nas variáveis da coleção.\n\n**Usuário padrão do seed:** `admin@herald.app` / `Admin@1234`"
+          },
+          "response": []
+        },
+        {
+          "name": "Recuperar Senha",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Resposta sempre 200 (anti-enumeração de email)",
+                  "pm.test('Resposta 200 independente do email existir', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@herald.app\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/auth/forgot-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "auth", "forgot-password"]
+            },
+            "description": "Envia um email com link de redefinição de senha (token válido por 1 hora). Sempre retorna 200 para não revelar se o email existe (anti-enumeração).\n\n⚠️ Requer SMTP configurado no `.env` para enviar o email de fato."
+          },
+          "response": []
+        },
+        {
+          "name": "Redefinir Senha via Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"00000000-0000-0000-0000-000000000000\",\n  \"password\": \"NovaSenha@2024\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/auth/reset-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "auth", "reset-password"]
+            },
+            "description": "Redefine a senha usando o token recebido por email. O token expira em 1 hora e é de uso único.\n\n⚠️ Substitua o `token` pelo valor recebido no email antes de executar."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Organizations",
+      "description": "Gestão da hierarquia organizacional: Plataforma → Paróquias → Comunidades. Apenas OWNER pode criar organizações.",
+      "item": [
+        {
+          "name": "Criar Paróquia",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('orgId', body.id);",
+                  "    console.log('✅ orgId salvo:', body.id, '|', body.name);",
+                  "} else {",
+                  "    console.error('❌ Falha ao criar paróquia:', pm.response.json().message);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Paróquia São Pedro Apóstolo\",\n  \"type\": \"PAROQUIA\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/organizations",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "organizations"]
+            },
+            "description": "Cria uma paróquia (nível raiz da hierarquia). O ID retornado é salvo automaticamente em `{{orgId}}`.\n\n**Perfil necessário:** OWNER"
+          },
+          "response": []
+        },
+        {
+          "name": "Criar Comunidade",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('comunidadeId', body.id);",
+                  "    console.log('✅ comunidadeId salvo:', body.id, '|', body.name);",
+                  "} else {",
+                  "    console.error('❌ Falha ao criar comunidade:', pm.response.json().message);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Comunidade Nossa Senhora Aparecida\",\n  \"type\": \"COMUNIDADE\",\n  \"parentId\": \"{{orgId}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/organizations",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "organizations"]
+            },
+            "description": "Cria uma comunidade filha de uma paróquia. O `parentId` deve ser o ID de uma paróquia existente. O ID retornado é salvo em `{{comunidadeId}}`.\n\n**Perfil necessário:** OWNER\n\n⚠️ Execute **Criar Paróquia** antes para ter `{{orgId}}` disponível."
+          },
+          "response": []
+        },
+        {
+          "name": "Listar Organizações",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/organizations",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "organizations"]
+            },
+            "description": "Lista organizações filtradas pelo escopo do perfil autenticado:\n- **OWNER:** vê todas as organizações da plataforma\n- **SUPER_ADMIN:** vê sua paróquia e todas as comunidades filhas\n- **ADMIN / OPERATOR:** vê apenas a própria comunidade"
+          },
+          "response": []
+        },
+        {
+          "name": "Buscar Organização",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/organizations/{{orgId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "organizations", "{{orgId}}"]
+            },
+            "description": "Retorna os dados de uma organização pelo ID. O acesso é validado contra o escopo do perfil autenticado."
+          },
+          "response": []
+        },
+        {
+          "name": "Atualizar Organização",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Paróquia São Pedro Apóstolo — Atualizada\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/organizations/{{orgId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "organizations", "{{orgId}}"]
+            },
+            "description": "Atualiza o nome de uma organização.\n\n**Perfis permitidos:**\n- **OWNER:** qualquer organização\n- **SUPER_ADMIN:** sua paróquia e suas comunidades"
+          },
+          "response": []
+        },
+        {
+          "name": "Desativar Organização",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/organizations/{{orgId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "organizations", "{{orgId}}"]
+            },
+            "description": "Desativa uma organização (soft delete — `active: false`). A organização deixa de aparecer em listagens mas os dados são preservados.\n\n**Perfil necessário:** OWNER"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "description": "Gestão de usuários respeitando a hierarquia de criação: OWNER → SUPER_ADMIN → ADMIN → OPERATOR. Não há auto-cadastro público.",
+      "item": [
+        {
+          "name": "Criar SUPER_ADMIN",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('userId', body.id);",
+                  "    console.log('✅ userId salvo:', body.id, '| Email:', body.email);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Maria Santos\",\n  \"email\": \"maria.santos@paroquia.com\",\n  \"password\": \"SuperAdmin@2024\",\n  \"role\": \"SUPER_ADMIN\",\n  \"organizationId\": \"{{orgId}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/users",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users"]
+            },
+            "description": "Cria um SUPER_ADMIN vinculado a uma paróquia. Após criado, o SUPER_ADMIN pode criar ADMINs para as comunidades da sua paróquia.\n\n**Perfil necessário:** OWNER\n\n⚠️ `organizationId` deve ser o ID de uma **PAROQUIA** (use `{{orgId}}`)."
+          },
+          "response": []
+        },
+        {
+          "name": "Criar ADMIN",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('userId', body.id);",
+                  "    console.log('✅ userId salvo (ADMIN):', body.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"José Ferreira\",\n  \"email\": \"jose.ferreira@comunidade.com\",\n  \"password\": \"Admin@2024\",\n  \"role\": \"ADMIN\",\n  \"organizationId\": \"{{comunidadeId}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/users",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users"]
+            },
+            "description": "Cria um ADMIN vinculado a uma comunidade. Deve ser criado por um SUPER_ADMIN logado com token da paróquia correta.\n\n**Perfil necessário:** SUPER_ADMIN\n\n⚠️ `organizationId` deve ser o ID de uma **COMUNIDADE** filha da paróquia do SUPER_ADMIN (use `{{comunidadeId}}`).\n\n⚠️ Para testar, faça login com a conta SUPER_ADMIN criada anteriormente."
+          },
+          "response": []
+        },
+        {
+          "name": "Criar OPERATOR",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('userId', body.id);",
+                  "    console.log('✅ userId salvo (OPERATOR):', body.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Ana Lima\",\n  \"email\": \"ana.lima@comunidade.com\",\n  \"password\": \"Operator@2024\",\n  \"role\": \"OPERATOR\",\n  \"organizationId\": \"{{comunidadeId}}\",\n  \"telegramId\": \"@ana_lima\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/users",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users"]
+            },
+            "description": "Cria um OPERATOR vinculado à mesma comunidade do ADMIN. OPERATORs visualizam o dashboard e acionam reenvios manuais, sem acesso a configurações.\n\n**Perfil necessário:** ADMIN\n\n💡 O campo `telegramId` é opcional mas necessário para receber alertas críticos nas Fases 4+."
+          },
+          "response": []
+        },
+        {
+          "name": "Listar Usuários",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/users",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users"]
+            },
+            "description": "Lista usuários filtrados pelo escopo do perfil:\n- **OWNER:** todos os usuários da plataforma\n- **SUPER_ADMIN:** usuários da paróquia e suas comunidades\n- **ADMIN:** usuários da própria comunidade\n\n**Perfil mínimo:** ADMIN"
+          },
+          "response": []
+        },
+        {
+          "name": "Buscar Usuário",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/users/{{userId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users", "{{userId}}"]
+            },
+            "description": "Retorna os dados de um usuário pelo ID. O acesso é validado contra o escopo do perfil."
+          },
+          "response": []
+        },
+        {
+          "name": "Atualizar Usuário",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Ana Lima Oliveira\",\n  \"telegramId\": \"@ana_lima_oliveira\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/users/{{userId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users", "{{userId}}"]
+            },
+            "description": "Atualiza nome e/ou `telegramId` de um usuário. O `telegramId` é usado para receber alertas críticos do sistema.\n\n**Perfil mínimo:** ADMIN (dentro do próprio escopo)"
+          },
+          "response": []
+        },
+        {
+          "name": "Desativar Usuário",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/users/{{userId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users", "{{userId}}"]
+            },
+            "description": "Desativa um usuário (soft delete — `active: false`). O usuário não consegue mais autenticar mas seus dados são preservados.\n\n⚠️ Você não pode desativar sua própria conta."
+          },
+          "response": []
+        },
+        {
+          "name": "Forçar Reset de Senha",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/users/{{userId}}/reset-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users", "{{userId}}", "reset-password"]
+            },
+            "description": "Força a redefinição de senha de um usuário: gera um token de reset com validade de 1h e envia por email ao destinatário.\n\n**Perfis permitidos:**\n- **OWNER:** qualquer usuário\n- **SUPER_ADMIN:** usuários da sua paróquia e comunidades\n- **ADMIN:** usuários da própria comunidade\n\n⚠️ Requer SMTP configurado no `.env`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Channels",
+      "description": "Gestão de canais de entrega (Email, WhatsApp, Telegram). As credenciais são criptografadas com AES-256 antes de persistir e nunca são expostas nos responses de listagem/criação.",
+      "item": [
+        {
+          "name": "Criar Canal Email",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('channelId', body.id);",
+                  "    console.log('✅ channelId salvo:', body.id, '|', body.label);",
+                  "    console.log('Observe: credentials não aparecem no response (AES-256).');",
+                  "} else {",
+                  "    console.error('❌ Falha ao criar canal:', pm.response.json().message);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"type\": \"EMAIL\",\n  \"label\": \"Canal Email Principal\",\n  \"credentials\": {\n    \"host\": \"smtp.gmail.com\",\n    \"port\": 587,\n    \"user\": \"notificacoes@paroquia.com\",\n    \"pass\": \"app-password-aqui\",\n    \"from\": \"Herald Notificações <notificacoes@paroquia.com>\"\n  },\n  \"dailyLimit\": 500,\n  \"hourlyLimit\": 50\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/channels",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "channels"]
+            },
+            "description": "Cria um canal de Email com credenciais SMTP criptografadas. O campo `credentials` é criptografado com AES-256 antes de ser persistido — o response retorna apenas `{ encrypted: '...' }`.\n\n**Campos de credentials para EMAIL:**\n```json\n{\n  \"host\": \"smtp.gmail.com\",\n  \"port\": 587,\n  \"user\": \"seu@email.com\",\n  \"pass\": \"senha-ou-app-password\",\n  \"from\": \"Nome <seu@email.com>\"\n}\n```\n\n**Perfil mínimo:** ADMIN (dentro do próprio escopo)"
+          },
+          "response": []
+        },
+        {
+          "name": "Criar Canal WhatsApp",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"type\": \"WHATSAPP\",\n  \"label\": \"WhatsApp +55 (95) 99123-4567\",\n  \"credentials\": {\n    \"phone\": \"+5595991234567\"\n  },\n  \"dailyLimit\": 200,\n  \"hourlyLimit\": 30\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/channels",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "channels"]
+            },
+            "description": "Cria um canal WhatsApp. Após criado, o onboarding via QR Code é realizado em **GET /v1/channels/:id/qrcode** (implementado na Fase 3).\n\nO canal é criado com status `WARMING` após o scan do QR Code, tornando-se `ACTIVE` após 7 dias.\n\n⚠️ **Fase 3** — O canal pode ser criado agora, mas a entrega via WhatsApp requer o Baileys configurado."
+          },
+          "response": []
+        },
+        {
+          "name": "Listar Canais",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/channels",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "channels"]
+            },
+            "description": "Lista todos os canais ativos (não `INACTIVE`) filtrados pelo escopo do perfil. As credentials não são expostas — aparecem apenas como `{ encrypted: '...' }`.\n\n**Perfil mínimo:** ADMIN"
+          },
+          "response": []
+        },
+        {
+          "name": "Buscar Canal",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/channels/{{channelId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "channels", "{{channelId}}"]
+            },
+            "description": "Retorna os dados de um canal pelo ID. As credentials permanecem criptografadas no response."
+          },
+          "response": []
+        },
+        {
+          "name": "Atualizar Canal",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"label\": \"Canal Email Principal — Atualizado\",\n  \"dailyLimit\": 1000,\n  \"hourlyLimit\": 100\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/channels/{{channelId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "channels", "{{channelId}}"]
+            },
+            "description": "Atualiza label, limites diário/horário e/ou credenciais de um canal. Se `credentials` for enviado, é re-criptografado antes de persistir.\n\nPara alterar apenas as credenciais, inclua o campo `credentials` com os novos valores em plain JSON:\n```json\n{\n  \"credentials\": {\n    \"host\": \"smtp.novo.com\",\n    \"port\": 465,\n    \"user\": \"novo@email.com\",\n    \"pass\": \"nova-senha\",\n    \"from\": \"Herald <novo@email.com>\"\n  }\n}\n```"
+          },
+          "response": []
+        },
+        {
+          "name": "Desativar Canal",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/channels/{{channelId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "channels", "{{channelId}}"]
+            },
+            "description": "Desativa um canal (soft delete — `status: INACTIVE`). O canal deixa de ser usado para novas entregas mas o histórico de tentativas é preservado."
+          },
+          "response": []
+        },
+        {
+          "name": "[Dev] Ver Credenciais Descriptografadas",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/channels/{{channelId}}/credentials",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "channels", "{{channelId}}", "credentials"]
+            },
+            "description": "⚠️ **Apenas para desenvolvimento** — retorna as credenciais descriptografadas para verificação. Retorna 403 em produção (`NODE_ENV=production`).\n\n**Perfil necessário:** OWNER"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Notifications",
+      "description": "Envio, consulta e reenvio de notificações. Os endpoints de envio (`/send`) são chamados pela API externa que fornece o conteúdo pronto. A Fase 5 substituirá o JWT por X-Api-Key por organização.",
+      "item": [
+        {
+          "name": "Enviar Notificação (Email)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('notificationId', body.id);",
+                  "    console.log('✅ notificationId salvo:', body.id);",
+                  "    console.log('Status inicial:', body.status, '| Canal:', body.channelType);",
+                  "} else {",
+                  "    console.error('❌ Falha ao enfileirar:', pm.response.json().message);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"channelType\": \"EMAIL\",\n  \"recipientName\": \"João Silva\",\n  \"recipientEmail\": \"joao.silva@feligres.com\",\n  \"message\": \"<p>Prezado João,</p><p>Informamos que sua contribuição de dizimista referente ao mês de maio foi recebida com sucesso.</p><p>Obrigado pelo seu apoio!</p>\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/notifications/send",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "notifications", "send"]
+            },
+            "description": "Enfileira uma notificação para entrega imediata via Email. Retorna 202 com a notificação no status `PENDENTE`. O worker BullMQ processa o job de forma assíncrona e atualiza o status para `ENVIADO` ou `FALHOU`.\n\n**Campos obrigatórios por canal:**\n- `EMAIL` → `recipientEmail`\n- `WHATSAPP` → `recipientPhone`\n- `TELEGRAM` → `recipientTelegramId`\n\n**Perfil mínimo:** ADMIN\n\n⚠️ Para o Email ser de fato entregue, configure as credenciais SMTP no canal."
+          },
+          "response": []
+        },
+        {
+          "name": "Enviar Notificação (WhatsApp)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"channelType\": \"WHATSAPP\",\n  \"recipientName\": \"Maria Oliveira\",\n  \"recipientPhone\": \"+5595991234567\",\n  \"message\": \"Olá Maria! Sua contribuição de dizimista referente ao mês de maio foi recebida. Obrigada pelo seu apoio!\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/notifications/send",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "notifications", "send"]
+            },
+            "description": "Enfileira uma notificação para entrega via WhatsApp. O job é criado e processado pelo worker, que seleciona o melhor número disponível do pool respeitando `dailyLimit` e `hourlyLimit`.\n\n⚠️ **Fase 3** — Requer um canal WhatsApp com sessão Baileys ativa (status `ACTIVE`). Sem canal configurado, a notificação vai para `FALHOU`."
+          },
+          "response": []
+        },
+        {
+          "name": "Listar Notificações",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/notifications?page=1&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "notifications"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Número da página (começa em 1)"
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "Itens por página (máximo 100)"
+                },
+                {
+                  "key": "status",
+                  "value": "FALHOU",
+                  "description": "Filtrar por status: PENDENTE | ENVIADO | FALHOU | FALHOU_DEFINITIVO | AGENDADO | CANCELADO",
+                  "disabled": true
+                },
+                {
+                  "key": "channelType",
+                  "value": "EMAIL",
+                  "description": "Filtrar por canal: EMAIL | WHATSAPP | TELEGRAM",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Lista notificações com paginação e filtros opcionais. O escopo é filtrado automaticamente pelo perfil:\n- **OWNER:** todas as notificações da plataforma\n- **SUPER_ADMIN:** notificações da paróquia e suas comunidades\n- **ADMIN / OPERATOR:** apenas da própria comunidade\n\n**Parâmetros de query:**\n- `page` e `limit` para paginação\n- `status` para filtrar por estado (desabilitado por padrão — remova o `#` para ativar)\n- `channelType` para filtrar por canal"
+          },
+          "response": []
+        },
+        {
+          "name": "Buscar Notificação com Tentativas",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/notifications/{{notificationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "notifications", "{{notificationId}}"]
+            },
+            "description": "Retorna os dados completos de uma notificação incluindo o histórico de tentativas de entrega (`attempts`), com canal utilizado, timestamp, sucesso/falha e mensagem de erro."
+          },
+          "response": []
+        },
+        {
+          "name": "Reenviar Notificação",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/notifications/{{notificationId}}/retry",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "notifications", "{{notificationId}}", "retry"]
+            },
+            "description": "Reenvia manualmente uma notificação que está em status `FALHOU` ou `FALHOU_DEFINITIVO`. O status é resetado para `PENDENTE` e um novo job é enfileirado no BullMQ.\n\nRetorna 400 se a notificação não estiver em estado de falha.\n\n**Perfis permitidos:** OWNER, SUPER_ADMIN, ADMIN, OPERATOR"
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
