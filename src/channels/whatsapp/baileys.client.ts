@@ -136,13 +136,18 @@ export class BaileysClient extends EventEmitter {
     const normalized = phone.replace(/\D/g, '')
     const jid = `${normalized}@s.whatsapp.net`
 
-    // Verify the JID is registered on WhatsApp before sending.
-    // onWhatsApp returns an empty array for numbers that don't have WhatsApp.
-    const [check] = await this.socket.onWhatsApp(jid)
-    if (!check?.exists) {
-      throw new Error(
-        `Número ${phone} não encontrado no WhatsApp (JID: ${jid})`
-      )
+    // Best-effort JID verification — only blocks when WA explicitly says the number
+    // doesn't exist. If onWhatsApp itself throws (network/session error), we log and
+    // proceed so a transient failure here doesn't silently drop the message.
+    try {
+      const [check] = await this.socket.onWhatsApp(jid)
+      if (check !== undefined && !check.exists) {
+        throw new Error(`Número ${phone} não encontrado no WhatsApp (JID: ${jid})`)
+      }
+    } catch (verifyErr) {
+      const msg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr)
+      if (msg.includes('não encontrado no WhatsApp')) throw verifyErr
+      console.warn(`[wa:${this.channelId}] onWhatsApp falhou — enviando mesmo assim:`, msg)
     }
 
     const result = await this.socket.sendMessage(jid, { text })
@@ -150,5 +155,46 @@ export class BaileysClient extends EventEmitter {
       `[wa:${this.channelId}] sendMessage → jid=${jid} ` +
         `msgId=${result?.key?.id} status=${result?.status}`
     )
+  }
+
+  /**
+   * Diagnoses a phone number: checks WhatsApp registration and optionally sends
+   * a test message. Used by the [Dev] test endpoint.
+   */
+  async diagnose(
+    phone: string,
+    sendText?: string
+  ): Promise<{ jid: string; exists: boolean | null; checkError?: string; messageSent: boolean; messageStatus?: number; sendError?: string }> {
+    if (!this.socket) {
+      return { jid: '', exists: null, checkError: 'Socket não inicializado', messageSent: false }
+    }
+
+    const normalized = phone.replace(/\D/g, '')
+    const jid = `${normalized}@s.whatsapp.net`
+
+    let exists: boolean | null = null
+    let checkError: string | undefined
+
+    try {
+      const [check] = await this.socket.onWhatsApp(jid)
+      exists = check?.exists ?? false
+    } catch (err) {
+      checkError = err instanceof Error ? err.message : String(err)
+    }
+
+    if (!sendText || exists === false) {
+      return { jid, exists, checkError, messageSent: false }
+    }
+
+    try {
+      const result = await this.socket.sendMessage(jid, { text: sendText })
+      return { jid, exists, checkError, messageSent: true, messageStatus: result?.status }
+    } catch (err) {
+      return {
+        jid, exists, checkError,
+        messageSent: false,
+        sendError: err instanceof Error ? err.message : String(err),
+      }
+    }
   }
 }

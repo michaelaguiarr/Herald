@@ -429,6 +429,81 @@ export async function channelsRoutes(fastify: FastifyInstance) {
     }
   )
 
+  // ── Dev / diagnostic endpoints ────────────────────────────────────────────
+
+  // Tests a WhatsApp channel: checks if a number is on WA and optionally sends
+  // a message. Returns raw diagnostic data. OWNER only, non-production.
+  f.post(
+    '/channels/:id/test-message',
+    {
+      onRequest: [authenticate, requireRole(UserRole.OWNER)],
+      schema: {
+        tags: ['WhatsApp'],
+        summary: '[Dev] Testar envio — verifica JID e envia mensagem de teste',
+        security: [{ bearerAuth: [] }],
+        params: z.object({ id: z.string().uuid() }),
+        body: z.object({
+          phone: z.string().min(8),
+          message: z.string().min(1).optional(),
+        }),
+        response: {
+          200: z.object({
+            channelStatus: z.string(),
+            jid: z.string(),
+            exists: z.boolean().nullable(),
+            checkError: z.string().optional(),
+            messageSent: z.boolean(),
+            messageStatus: z.number().optional(),
+            messageStatusLabel: z.string().optional(),
+            sendError: z.string().optional(),
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      if (process.env.NODE_ENV === 'production') {
+        throw new AppError(403, 'Não disponível em produção')
+      }
+
+      const { id } = request.params
+      const { phone, message } = request.body
+
+      const channel = await prisma.channel.findUnique({ where: { id } })
+      if (!channel) throw new AppError(404, 'Canal não encontrado')
+      if (channel.type !== ChannelType.WHATSAPP) {
+        throw new AppError(400, 'Canal não é do tipo WhatsApp')
+      }
+
+      const session = whatsappSessionManager.getSession(id)
+      if (!session) {
+        throw new AppError(503, `Sessão não carregada (status DB: ${channel.status}). Reconecte o canal primeiro.`)
+      }
+
+      const STATUS_LABELS: Record<number, string> = {
+        0: 'PENDING (WA server ainda não confirmou)',
+        1: 'SERVER_ACK (✓ servidor recebeu)',
+        2: 'DELIVERY_ACK (✓✓ entregue ao dispositivo)',
+        3: 'READ (✓✓ lido)',
+        4: 'PLAYED',
+      }
+
+      const result = await session.diagnose(phone, message)
+
+      return reply.send({
+        channelStatus: session.status,
+        jid: result.jid,
+        exists: result.exists,
+        checkError: result.checkError,
+        messageSent: result.messageSent,
+        messageStatus: result.messageStatus,
+        messageStatusLabel: result.messageStatus !== undefined
+          ? (STATUS_LABELS[result.messageStatus] ?? `status desconhecido (${result.messageStatus})`)
+          : undefined,
+        sendError: result.sendError,
+      })
+    }
+  )
+
   // Endpoint to expose decrypted credentials for debugging (OWNER only, dev only)
   f.get(
     '/channels/:id/credentials',
