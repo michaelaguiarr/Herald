@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { ZodTypeProvider } from 'fastify-type-provider-zod'
 import { z } from 'zod'
 import { OrgType, UserRole } from '@prisma/client'
+import { randomBytes } from 'crypto'
 import { prisma } from '../../lib/prisma'
 import { AppError } from '../errors/app-error'
 import { authenticate } from '../middlewares/authenticate'
@@ -216,6 +217,86 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
       })
 
       return reply.send({ message: 'Organização desativada com sucesso.' })
+    }
+  )
+
+  // ── API Key endpoints ──────────────────────────────────────────────────────
+
+  f.post(
+    '/organizations/:id/api-key',
+    {
+      onRequest: [authenticate, requireRole(UserRole.OWNER)],
+      schema: {
+        tags: ['Organizations'],
+        summary: 'Gerar (ou regen) API Key para a organização',
+        description:
+          'Retorna a chave gerada **apenas uma vez** — guarde-a imediatamente. ' +
+          'Para revogar, chame DELETE /organizations/:id/api-key.',
+        security: [{ bearerAuth: [] }],
+        params: z.object({ id: z.string().uuid() }),
+        response: { 200: z.object({ apiKey: z.string() }) },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params
+      const org = await prisma.organization.findUnique({ where: { id, active: true } })
+      if (!org) throw new AppError(404, 'Organização não encontrada')
+
+      const apiKey = `hld_${randomBytes(32).toString('hex')}`
+
+      await prisma.$transaction(async (tx) => {
+        await tx.organization.update({ where: { id }, data: { apiKey } })
+        await writeAuditLog(
+          {
+            userId: request.user.sub,
+            organizationId: id,
+            action: 'ORGANIZATION_API_KEY_GENERATED',
+            targetId: id,
+            targetType: 'organization',
+            ipAddress: request.ip,
+          },
+          tx
+        )
+      })
+
+      return reply.send({ apiKey })
+    }
+  )
+
+  f.delete(
+    '/organizations/:id/api-key',
+    {
+      onRequest: [authenticate, requireRole(UserRole.OWNER)],
+      schema: {
+        tags: ['Organizations'],
+        summary: 'Revogar API Key da organização',
+        security: [{ bearerAuth: [] }],
+        params: z.object({ id: z.string().uuid() }),
+        response: { 200: z.object({ message: z.string() }) },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params
+      const org = await prisma.organization.findUnique({ where: { id, active: true } })
+      if (!org) throw new AppError(404, 'Organização não encontrada')
+      if (!org.apiKey) throw new AppError(400, 'Esta organização não possui API Key')
+
+      await prisma.$transaction(async (tx) => {
+        await tx.organization.update({ where: { id }, data: { apiKey: null } })
+        await writeAuditLog(
+          {
+            userId: request.user.sub,
+            organizationId: id,
+            action: 'ORGANIZATION_API_KEY_REVOKED',
+            targetId: id,
+            targetType: 'organization',
+            ipAddress: request.ip,
+          },
+          tx
+        )
+      })
+
+      return reply.send({ message: 'API Key revogada com sucesso.' })
     }
   )
 }

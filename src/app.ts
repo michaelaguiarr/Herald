@@ -14,7 +14,7 @@ import { channelsRoutes } from './http/routes/channels'
 import { notificationsRoutes } from './http/routes/notifications'
 import { startNotificationWorker } from './workers/notification.worker'
 import { startAlertWorker } from './workers/alert.worker'
-import { startSchedulerWorker, registerDailyResetJob } from './workers/scheduler.worker'
+import { startSchedulerWorker, registerDailyJobs } from './workers/scheduler.worker'
 import { whatsappSessionManager } from './channels/whatsapp/session.manager'
 
 export async function buildApp() {
@@ -78,8 +78,8 @@ export async function buildApp() {
   startNotificationWorker()
   startAlertWorker()
   startSchedulerWorker()
-  registerDailyResetJob().catch((err) =>
-    app.log.error({ err }, '[scheduler] Falha ao registrar cron daily-reset')
+  registerDailyJobs().catch((err) =>
+    app.log.error({ err }, '[scheduler] Falha ao registrar crons diários')
   )
 
   // Restore WhatsApp sessions for existing WARMING/ACTIVE/DISCONNECTED channels

@@ -39,14 +39,27 @@ async function processNotification(notificationId: string, attemptsMade: number)
     return
   }
 
-  // Idempotency: skip if another worker already processed this notification
+  // AGENDADO jobs fire via delayed BullMQ — promote to PENDENTE before processing
+  if (notification.status === NotificationStatus.AGENDADO) {
+    await prisma.notification.update({
+      where: { id: notificationId },
+      data: { status: NotificationStatus.PENDENTE },
+    })
+    notification.status = NotificationStatus.PENDENTE
+  }
+
+  // Idempotency: skip if already processed by a concurrent worker
   if (notification.status !== NotificationStatus.PENDENTE) {
     console.log(`[worker] Notificação ${notificationId} já processada (${notification.status})`)
     return
   }
 
   const isLastAttempt = attemptsMade >= MAX_RETRY_CYCLES
-  const channels = await selectChannels(notification.organizationId, notification.channelType)
+  const channels = await selectChannels(
+    notification.organizationId,
+    notification.channelType,
+    { recipientPhone: notification.recipientPhone }  // anti-spam deduplication
+  )
 
   if (channels.length === 0) {
     console.error(

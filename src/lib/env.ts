@@ -13,6 +13,9 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   SMTP_FROM: z.string().default('Herald <no-reply@herald.app>'),
+  // Timezone for daily-reset cron (sentToday=0). Default UTC.
+  // Use IANA timezone names, e.g. 'America/Sao_Paulo' for BRT (UTC-3).
+  DAILY_RESET_TZ: z.string().default('UTC'),
   SEED_OWNER_NAME: z.string().optional(),
   SEED_OWNER_EMAIL: z.string().email().optional(),
   SEED_OWNER_PASSWORD: z.string().optional(),

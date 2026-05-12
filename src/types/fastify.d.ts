@@ -10,7 +10,7 @@ declare module '@fastify/jwt' {
       name: string
     }
     user: {
-      sub: string
+      sub: string | null    // null when authenticated via X-Api-Key (no human user)
       role: UserRole
       organizationId: string | null
       name: string

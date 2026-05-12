@@ -103,20 +103,41 @@ class WhatsAppSessionManager {
         emitter.emit('qr', qr)
       })
 
-      client.on('status-change', async (status: WaSessionStatus) => {
-        emitter.emit('status-change', status)
+      client.on('status-change', async (rawStatus: WaSessionStatus) => {
+        // ── Warmup: first Baileys ACTIVE → record connectedAt, keep WARMING ──
+        // The channel stays WARMING until the 7-day cron promotes it to ACTIVE.
+        // After promotion, reconnections go straight to ACTIVE.
+        let effectiveStatus: WaSessionStatus = rawStatus
+        let extraData: { connectedAt?: Date } = {}
+
+        if (rawStatus === 'ACTIVE') {
+          const existing = await prisma.channel
+            .findUnique({ where: { id: channelId }, select: { connectedAt: true } })
+            .catch(() => null)
+
+          if (!existing?.connectedAt) {
+            // First ever connection — start warm-up period
+            effectiveStatus = 'WARMING'
+            extraData = { connectedAt: new Date() }
+            console.log(`[wa:session:${channelId}] Primeira conexão → warm-up iniciado (7 dias)`)
+          }
+        }
+
+        // Emit the effective status (WARMING for first connect, others as-is)
+        emitter.emit('status-change', effectiveStatus)
 
         const channel = await prisma.channel
           .update({
             where: { id: channelId },
-            data: { status: statusToDb[status] },
+            data: { status: statusToDb[effectiveStatus], ...extraData },
           })
           .catch((err) => {
             console.error(`[wa:manager] Falha ao atualizar status ${channelId}:`, err)
             return null
           })
 
-        console.log(`[wa:session:${channelId}] → ${status}`)
+        const status = effectiveStatus  // alias for the rest of this handler
+        console.log(`[wa:session:${channelId}] → ${status}${rawStatus !== status ? ` (Baileys: ${rawStatus})` : ''}`)
 
         // ── Debounce: SESSAO_DESCONECTADA alert ─────────────────────────────
         // Cancel any existing timer whenever status changes.
