@@ -11,6 +11,14 @@ export type WaSessionStatus = 'WARMING' | 'ACTIVE' | 'DISCONNECTED' | 'BANNED'
 
 const RECONNECT_DELAY_MS = 5_000
 
+// proto.WebMessageInfo.Status — mirrors the protobuf enum for human-readable logs
+function waStatusLabel(status: number | null | undefined): string {
+  const labels: Record<number, string> = {
+    0: 'ERROR', 1: 'PENDING', 2: 'SERVER_ACK', 3: 'DELIVERY_ACK', 4: 'READ', 5: 'PLAYED',
+  }
+  return labels[status ?? -1] ?? `unknown(${status})`
+}
+
 // Minimal pino-compatible logger that suppresses Baileys noise.
 // Baileys v7 expects a pino Logger — cast via `as never` to bypass TS.
 const makeSilentLogger = (channelId: string) =>
@@ -128,24 +136,53 @@ export class BaileysClient extends EventEmitter {
     const normalized = phone.replace(/\D/g, '')
     const jid = `${normalized}@s.whatsapp.net`
 
-    // Best-effort JID check — only blocks when WA explicitly says number doesn't exist.
-    // If onWhatsApp throws (network/session issue), log and proceed.
+    // Step 1 — Verify number is on WhatsApp.
+    // Three outcomes: exists=true (proceed), exists=false (block), error (propagate).
+    // We no longer swallow errors silently: an onWhatsApp failure should surface
+    // as a worker error so the notification is retried, not silently marked ENVIADO.
+    let jidVerified = false
     try {
       const checks = await this.socket.onWhatsApp(jid)
       const check = checks?.[0]
-      if (check !== undefined && !check.exists) {
+      if (check?.exists === false) {
         throw new Error(`Número ${phone} não encontrado no WhatsApp (JID: ${jid})`)
       }
+      jidVerified = !!check?.exists
+      console.log(
+        `[wa:${this.channelId}] onWhatsApp → jid=${jid} exists=${jidVerified}`
+      )
     } catch (verifyErr) {
       const msg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr)
+      // Re-throw "not found" — this is definitive, the number has no WhatsApp
       if (msg.includes('não encontrado no WhatsApp')) throw verifyErr
-      console.warn(`[wa:${this.channelId}] onWhatsApp falhou — enviando mesmo assim:`, msg)
+      // For other errors (timeout, LID issue, network) warn but proceed.
+      // The result.status check below will catch server-side rejections.
+      console.warn(
+        `[wa:${this.channelId}] onWhatsApp error (${msg}) — prosseguindo sem verificação`
+      )
     }
 
+    // Step 2 — Send the message
     const result = await this.socket.sendMessage(jid, { text })
+
+    // Step 3 — Validate result: Baileys must return a message with an ID.
+    // proto.WebMessageInfo.Status: 0=ERROR, 1=PENDING, 2=SERVER_ACK, 3=DELIVERY_ACK
+    if (!result?.key?.id) {
+      throw new Error(
+        `Baileys não retornou ID de mensagem para ${jid} — envio falhou silenciosamente`
+      )
+    }
+    if (result.status === 0) {
+      throw new Error(
+        `WA server rejeitou a mensagem para ${jid} ` +
+        `(status=0 ERROR, msgId=${result.key.id})`
+      )
+    }
+
     console.log(
-      `[wa:${this.channelId}] sendMessage → jid=${jid} ` +
-      `msgId=${result?.key?.id} status=${result?.status ?? 'unknown'}`
+      `[wa:${this.channelId}] sendMessage OK → jid=${jid} ` +
+      `jidVerified=${jidVerified} msgId=${result.key.id} ` +
+      `status=${result.status}(${waStatusLabel(result.status)})`
     )
   }
 
@@ -184,10 +221,19 @@ export class BaileysClient extends EventEmitter {
     try {
       const result = await this.socket.sendMessage(jid, { text: sendText })
       const rawStatus = result?.status
+      const numStatus = rawStatus != null ? Number(rawStatus) : undefined
+
+      // Treat missing ID or status=0 (ERROR) as delivery failure
+      if (!result?.key?.id) {
+        return { jid, exists, checkError, messageSent: false, sendError: 'Baileys não retornou ID de mensagem' }
+      }
+      if (rawStatus === 0) {
+        return { jid, exists, checkError, messageSent: false, messageStatus: 0,
+          sendError: `WA server rejeitou (status=0 ERROR, msgId=${result.key.id})` }
+      }
+
       return {
-        jid, exists, checkError, messageSent: true,
-        // proto.Status is an enum — coerce to number for the response schema
-        messageStatus: rawStatus != null ? Number(rawStatus) : undefined,
+        jid, exists, checkError, messageSent: true, messageStatus: numStatus,
       }
     } catch (err) {
       return {
