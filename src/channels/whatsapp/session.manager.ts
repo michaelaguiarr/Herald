@@ -1,6 +1,7 @@
 import EventEmitter from 'events'
-import { ChannelStatus, ChannelType } from '@prisma/client'
+import fs from 'fs'
 import path from 'path'
+import { ChannelStatus, ChannelType } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { BaileysClient, WaSessionStatus } from './baileys.client'
 
@@ -18,15 +19,19 @@ class WhatsAppSessionManager {
   private sessions = new Map<string, BaileysClient>()
 
   // Channel-level emitters persist across session replacements (reconnect, restart).
-  // SSE streams subscribe here so they keep receiving events even after /reconnect
-  // creates a new BaileysClient for the same channel.
+  // SSE streams subscribe here so they receive events regardless of which
+  // BaileysClient instance is currently active.
   private channelEmitters = new Map<string, EventEmitter>()
+
+  // Tracks channels whose startSession is currently in-flight to prevent
+  // concurrent calls (e.g. SSE auto-start racing with /reconnect).
+  private starting = new Set<string>()
 
   getChannelEmitter(channelId: string): EventEmitter {
     let emitter = this.channelEmitters.get(channelId)
     if (!emitter) {
       emitter = new EventEmitter()
-      emitter.setMaxListeners(30) // allow multiple concurrent SSE clients per channel
+      emitter.setMaxListeners(30)
       this.channelEmitters.set(channelId, emitter)
     }
     return emitter
@@ -51,41 +56,62 @@ class WhatsAppSessionManager {
     }
   }
 
-  async startSession(channelId: string): Promise<BaileysClient> {
-    const existing = this.sessions.get(channelId)
-    if (existing) {
-      // Disconnect silently — no DB write, no status event from old session
-      await existing.disconnect(false)
+  /**
+   * @param clearAuth  When true, deletes the saved Baileys auth state before
+   *   connecting. Use for manual reconnects so a fresh QR Code is always
+   *   generated instead of Baileys silently trying to resume an expired session.
+   */
+  async startSession(channelId: string, clearAuth = false): Promise<BaileysClient> {
+    // Guard: skip if a start is already in progress for this channel
+    if (this.starting.has(channelId)) {
+      console.log(`[wa:manager] startSession ${channelId} já em andamento — ignorando chamada duplicada`)
+      // Return existing client (may still be connecting)
+      const existing = this.sessions.get(channelId)
+      if (existing) return existing
     }
 
-    const client = new BaileysClient(channelId, sessionsBasePath)
-    this.sessions.set(channelId, client)
+    this.starting.add(channelId)
 
-    const emitter = this.getChannelEmitter(channelId)
+    try {
+      const existing = this.sessions.get(channelId)
+      if (existing) {
+        await existing.disconnect(false)
+      }
 
-    // Forward client events to the persistent channel emitter.
-    // SSE streams subscribed to the emitter receive events regardless of
-    // which BaileysClient instance is currently active.
-    client.on('qr', (qr: string) => {
-      emitter.emit('qr', qr)
-    })
+      if (clearAuth) {
+        const sessionDir = path.join(sessionsBasePath, channelId)
+        fs.rmSync(sessionDir, { recursive: true, force: true })
+        console.log(`[wa:manager] Auth state removido para ${channelId} — novo QR Code será gerado`)
+      }
 
-    client.on('status-change', async (status: WaSessionStatus) => {
-      emitter.emit('status-change', status)
+      const client = new BaileysClient(channelId, sessionsBasePath)
+      this.sessions.set(channelId, client)
 
-      await prisma.channel
-        .update({
-          where: { id: channelId },
-          data: { status: statusToDb[status] },
-        })
-        .catch((err) =>
-          console.error(`[wa:manager] Falha ao atualizar status ${channelId}:`, err)
-        )
-      console.log(`[wa:session:${channelId}] → ${status}`)
-    })
+      const emitter = this.getChannelEmitter(channelId)
 
-    await client.connect()
-    return client
+      client.on('qr', (qr: string) => {
+        emitter.emit('qr', qr)
+      })
+
+      client.on('status-change', async (status: WaSessionStatus) => {
+        emitter.emit('status-change', status)
+
+        await prisma.channel
+          .update({
+            where: { id: channelId },
+            data: { status: statusToDb[status] },
+          })
+          .catch((err) =>
+            console.error(`[wa:manager] Falha ao atualizar status ${channelId}:`, err)
+          )
+        console.log(`[wa:session:${channelId}] → ${status}`)
+      })
+
+      await client.connect()
+      return client
+    } finally {
+      this.starting.delete(channelId)
+    }
   }
 
   async stopSession(channelId: string): Promise<void> {
@@ -94,7 +120,6 @@ class WhatsAppSessionManager {
       await session.disconnect(false)
       this.sessions.delete(channelId)
     }
-    // Clean up the channel emitter so stale SSE listeners don't accumulate
     const emitter = this.channelEmitters.get(channelId)
     if (emitter) {
       emitter.removeAllListeners()

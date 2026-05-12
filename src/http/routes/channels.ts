@@ -409,9 +409,10 @@ export async function channelsRoutes(fastify: FastifyInstance) {
         data: { status: ChannelStatus.WARMING },
       })
 
-      // Fire and forget — startSession calls disconnect(false) on existing session
-      // so the WARMING status above won't be overwritten by a stale DISCONNECTED event
-      whatsappSessionManager.startSession(id).catch((err) =>
+      // clearAuth=true deletes the saved Baileys creds so a fresh QR is always
+      // generated. Without this, Baileys tries to resume the old session silently
+      // and never emits a QR event when that session is expired or invalid.
+      whatsappSessionManager.startSession(id, true).catch((err) =>
         console.error(`[channels] Falha ao reconectar WA ${id}:`, err)
       )
 
