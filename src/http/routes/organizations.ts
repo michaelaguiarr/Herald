@@ -18,16 +18,28 @@ const organizationShape = z.object({
   createdAt: z.date(),
 })
 
+function assertOrgScope(
+  actor: { role: string; organizationId: string | null },
+  org: { id: string; parentId: string | null },
+  message = 'Sem permissão para esta ação'
+): void {
+  if (actor.role === UserRole.OWNER) return
+  if (actor.role === UserRole.SUPER_ADMIN) {
+    const inScope = org.id === actor.organizationId || org.parentId === actor.organizationId
+    if (!inScope) throw new AppError(403, message)
+  }
+}
+
 export async function organizationsRoutes(fastify: FastifyInstance) {
   const f = fastify.withTypeProvider<ZodTypeProvider>()
 
   f.post(
     '/organizations',
     {
-      onRequest: [authenticate, requireRole(UserRole.OWNER)],
+      onRequest: [authenticate, requireRole(UserRole.OWNER, UserRole.SUPER_ADMIN)],
       schema: {
         tags: ['Organizations'],
-        summary: 'Criar organização (paróquia ou comunidade)',
+        summary: 'Criar organização — OWNER: qualquer tipo; SUPER_ADMIN: apenas FILIAL dentro da própria organização',
         security: [{ bearerAuth: [] }],
         body: z.object({
           name: z.string().min(2),
@@ -41,17 +53,34 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const { name, type, parentId } = request.body
+      const actor = request.user
 
-      if (type === OrgType.FILIAL) {
-        if (!parentId) throw new AppError(400, 'Filial deve ter uma organização pai')
-        const parent = await prisma.organization.findUnique({ where: { id: parentId } })
-        if (!parent || parent.type !== OrgType.ORGANIZACAO || !parent.active) {
+      if (actor.role === UserRole.SUPER_ADMIN) {
+        if (type !== OrgType.FILIAL) {
+          throw new AppError(403, 'SUPER_ADMIN só pode criar filiais')
+        }
+        if (!parentId) {
+          throw new AppError(400, 'Filial deve ter uma organização pai')
+        }
+        const parent = await prisma.organization.findUnique({ where: { id: parentId, active: true } })
+        if (!parent) throw new AppError(400, 'Organização pai não encontrada ou inativa')
+        const inScope =
+          parent.id === actor.organizationId || parent.parentId === actor.organizationId
+        if (!inScope) throw new AppError(403, 'Sem permissão para criar filial nesta organização')
+        if (parent.type !== OrgType.ORGANIZACAO) {
           throw new AppError(400, 'Organização pai não encontrada ou inativa')
         }
-      }
-
-      if (type === OrgType.ORGANIZACAO && parentId) {
-        throw new AppError(400, 'Organização raiz não pode ter organização pai')
+      } else {
+        if (type === OrgType.FILIAL) {
+          if (!parentId) throw new AppError(400, 'Filial deve ter uma organização pai')
+          const parent = await prisma.organization.findUnique({ where: { id: parentId } })
+          if (!parent || parent.type !== OrgType.ORGANIZACAO || !parent.active) {
+            throw new AppError(400, 'Organização pai não encontrada ou inativa')
+          }
+        }
+        if (type === OrgType.ORGANIZACAO && parentId) {
+          throw new AppError(400, 'Organização raiz não pode ter organização pai')
+        }
       }
 
       const org = await prisma.$transaction(async (tx) => {
@@ -60,7 +89,7 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
         })
         await writeAuditLog(
           {
-            userId: request.user.sub,
+            userId: actor.sub,
             organizationId: created.id,
             action: 'ORGANIZATION_CREATED',
             targetId: created.id,
@@ -151,11 +180,7 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
       const org = await prisma.organization.findUnique({ where: { id, active: true } })
       if (!org) throw new AppError(404, 'Organização não encontrada')
 
-      if (actor.role === UserRole.SUPER_ADMIN) {
-        const allowed =
-          org.id === actor.organizationId || org.parentId === actor.organizationId
-        if (!allowed) throw new AppError(403, 'Sem permissão para editar esta organização')
-      }
+      assertOrgScope(actor, org, 'Sem permissão para editar esta organização')
 
       const updated = await prisma.$transaction(async (tx) => {
         const result = await tx.organization.update({
@@ -184,10 +209,10 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
   f.delete(
     '/organizations/:id',
     {
-      onRequest: [authenticate, requireRole(UserRole.OWNER)],
+      onRequest: [authenticate, requireRole(UserRole.OWNER, UserRole.SUPER_ADMIN)],
       schema: {
         tags: ['Organizations'],
-        summary: 'Desativar organização (soft delete)',
+        summary: 'Desativar organização (soft delete) — SUPER_ADMIN só pode desativar filiais do seu escopo',
         security: [{ bearerAuth: [] }],
         params: z.object({ id: z.string().uuid() }),
         response: {
@@ -197,15 +222,22 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params
+      const actor = request.user
 
       const org = await prisma.organization.findUnique({ where: { id, active: true } })
       if (!org) throw new AppError(404, 'Organização não encontrada')
+
+      if (actor.role === UserRole.SUPER_ADMIN && org.type === OrgType.ORGANIZACAO) {
+        throw new AppError(403, 'Apenas o dono do sistema pode desativar uma organização')
+      }
+
+      assertOrgScope(actor, org, 'Sem permissão para desativar esta organização')
 
       await prisma.$transaction(async (tx) => {
         await tx.organization.update({ where: { id }, data: { active: false } })
         await writeAuditLog(
           {
-            userId: request.user.sub,
+            userId: actor.sub,
             organizationId: id,
             action: 'ORGANIZATION_DELETED',
             targetId: id,
@@ -225,7 +257,7 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
   f.post(
     '/organizations/:id/api-key',
     {
-      onRequest: [authenticate, requireRole(UserRole.OWNER)],
+      onRequest: [authenticate, requireRole(UserRole.OWNER, UserRole.SUPER_ADMIN)],
       schema: {
         tags: ['Organizations'],
         summary: 'Gerar (ou regen) API Key para a organização',
@@ -239,8 +271,12 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params
+      const actor = request.user
+
       const org = await prisma.organization.findUnique({ where: { id, active: true } })
       if (!org) throw new AppError(404, 'Organização não encontrada')
+
+      assertOrgScope(actor, org, 'Sem permissão para gerenciar API Key desta organização')
 
       const rawKey = `hld_${randomBytes(32).toString('hex')}`
       const hashedKey = createHash('sha256').update(rawKey).digest('hex')
@@ -249,7 +285,7 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
         await tx.organization.update({ where: { id }, data: { apiKey: hashedKey } })
         await writeAuditLog(
           {
-            userId: request.user.sub,
+            userId: actor.sub,
             organizationId: id,
             action: 'ORGANIZATION_API_KEY_GENERATED',
             targetId: id,
@@ -267,7 +303,7 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
   f.delete(
     '/organizations/:id/api-key',
     {
-      onRequest: [authenticate, requireRole(UserRole.OWNER)],
+      onRequest: [authenticate, requireRole(UserRole.OWNER, UserRole.SUPER_ADMIN)],
       schema: {
         tags: ['Organizations'],
         summary: 'Revogar API Key da organização',
@@ -278,15 +314,19 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params
+      const actor = request.user
+
       const org = await prisma.organization.findUnique({ where: { id, active: true } })
       if (!org) throw new AppError(404, 'Organização não encontrada')
       if (!org.apiKey) throw new AppError(400, 'Esta organização não possui API Key')
+
+      assertOrgScope(actor, org, 'Sem permissão para gerenciar API Key desta organização')
 
       await prisma.$transaction(async (tx) => {
         await tx.organization.update({ where: { id }, data: { apiKey: null } })
         await writeAuditLog(
           {
-            userId: request.user.sub,
+            userId: actor.sub,
             organizationId: id,
             action: 'ORGANIZATION_API_KEY_REVOKED',
             targetId: id,

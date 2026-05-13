@@ -470,6 +470,53 @@ O cache pode ficar stale por até 24h se um usuário mudar de dispositivo (troca
 
 ---
 
+## POST /auth/change-password — alteração de senha pelo próprio usuário
+
+`POST /v1/auth/change-password` — autenticado via JWT (qualquer perfil).
+
+**Body:** `{ currentPassword, newPassword, confirmPassword }`
+
+**Validações (em ordem):**
+1. `newPassword !== confirmPassword` → 400 "Nova senha e confirmação não coincidem"
+2. `newPassword === currentPassword` → 400 "A nova senha não pode ser igual à senha atual"
+3. `currentPassword` não bate com hash → 400 "Senha atual incorreta"
+4. `newPassword` mínimo 8 caracteres (Zod)
+
+**Comportamento:**
+- Não invalida o token atual — usuário continua logado
+- Grava `audit_log` com `action = 'USER_CHANGED_PASSWORD'`
+- `passwordHash` atualizado com bcrypt, salt rounds 12
+
+---
+
+## Permissões SUPER_ADMIN em /organizations
+
+### Helper `assertOrgScope` — `src/http/routes/organizations.ts`
+
+Função local que centraliza a verificação de escopo para SUPER_ADMIN:
+- `OWNER` → passa sempre (sem restrição)
+- `SUPER_ADMIN` → `org.id === actor.organizationId` **ou** `org.parentId === actor.organizationId`; caso contrário lança 403 com a mensagem fornecida
+
+Usada em: PUT, DELETE, POST/DELETE api-key.
+
+### Tabela de permissões por endpoint
+
+| Endpoint | OWNER | SUPER_ADMIN | Restrição SUPER_ADMIN |
+|---|---|---|---|
+| `POST /organizations` | ORGANIZACAO ou FILIAL | Apenas FILIAL | `parentId` deve estar no escopo |
+| `PUT /organizations/:id` | qualquer | qualquer | org deve estar no escopo |
+| `DELETE /organizations/:id` | qualquer | apenas FILIAL | org deve ser FILIAL **e** estar no escopo |
+| `POST /organizations/:id/api-key` | qualquer | qualquer | org deve estar no escopo |
+| `DELETE /organizations/:id/api-key` | qualquer | qualquer | org deve estar no escopo |
+
+**Escopo SUPER_ADMIN:** `org.id === actor.organizationId` (própria org) ou `org.parentId === actor.organizationId` (filial direta).
+
+**Erros específicos:**
+- `DELETE` com SUPER_ADMIN em ORGANIZACAO → 403 `"Apenas o dono do sistema pode desativar uma organização"`
+- Qualquer endpoint com org fora do escopo → 403 com mensagem do endpoint
+
+---
+
 ## Dívidas Técnicas Documentadas
 
 | Item | Impacto | Resolver na |
