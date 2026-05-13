@@ -8,8 +8,8 @@ datasource db {
 }
 
 enum OrgType {
-  PAROQUIA
-  COMUNIDADE
+  ORGANIZACAO
+  FILIAL
 }
 
 enum UserRole {
@@ -57,6 +57,7 @@ model Organization {
   channels      Channel[]
   notifications Notification[]
   auditLogs     AuditLog[]
+  optOuts       OptOut[]
 
   @@map("organization")
 }
@@ -71,10 +72,12 @@ model User {
   role          UserRole
   telegramId    String?       @map("telegram_id")
   active        Boolean       @default(true)
-  resetToken    String?       @map("reset_token")
-  resetTokenExp DateTime?     @map("reset_token_exp")
-  lastLoginAt   DateTime?     @map("last_login_at")
-  createdAt     DateTime      @default(now()) @map("created_at")
+  resetToken        String?       @map("reset_token")
+  resetTokenExp     DateTime?     @map("reset_token_exp")
+  refreshTokenHash  String?       @map("refresh_token_hash")
+  refreshTokenExp   DateTime?     @map("refresh_token_exp")
+  lastLoginAt       DateTime?     @map("last_login_at")
+  createdAt         DateTime      @default(now()) @map("created_at")
 
   auditLogs AuditLog[]
 
@@ -111,6 +114,8 @@ model Notification {
   recipientEmail      String?            @map("recipient_email")
   recipientTelegramId String?            @map("recipient_telegram_id")
   message             String
+  imageUrl            String?            @map("image_url")
+  imageCaption        String?            @map("image_caption")
   status              NotificationStatus @default(PENDENTE)
   scheduledAt         DateTime?          @map("scheduled_at")
   sentAt              DateTime?          @map("sent_at")
@@ -124,16 +129,30 @@ model Notification {
 }
 
 model NotificationAttempt {
-  id             String       @id @default(uuid())
-  notificationId String       @map("notification_id")
-  notification   Notification @relation(fields: [notificationId], references: [id])
-  channelId      String       @map("channel_id")
-  channel        Channel      @relation(fields: [channelId], references: [id])
-  attemptedAt    DateTime     @map("attempted_at")
-  success        Boolean
-  errorMessage   String?      @map("error_message")
+  id                String   @id @default(uuid())
+  notificationId    String   @map("notification_id")
+  notification      Notification @relation(fields: [notificationId], references: [id])
+  channelId         String   @map("channel_id")
+  channel           Channel  @relation(fields: [channelId], references: [id])
+  attemptedAt       DateTime @map("attempted_at")
+  success           Boolean
+  errorMessage      String?  @map("error_message")
+  whatsappMessageId String?  @map("whatsapp_message_id")
+  deliveryStatus    String?  @map("delivery_status")
 
   @@map("notification_attempt")
+}
+
+model OptOut {
+  id             String       @id @default(uuid())
+  phone          String
+  organizationId String       @map("organization_id")
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  reason         String?
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@unique([phone, organizationId])
+  @@map("opt_out")
 }
 
 model AuditLog {

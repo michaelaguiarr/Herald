@@ -17,8 +17,17 @@ export interface TelegramCredentials {
 export async function sendViaTelegram(
   credentials: TelegramCredentials,
   chatId: string,
-  text: string
+  text: string,
+  opts?: { imageUrl?: string; caption?: string }
 ): Promise<void> {
   const bot = new TelegramBot(credentials.botToken)
-  await bot.sendMessage(chatId, text, { parse_mode: 'HTML' })
+  if (opts?.imageUrl) {
+    // sendPhoto accepts a publicly accessible URL directly — no download needed
+    await bot.sendPhoto(chatId, opts.imageUrl, {
+      caption: opts.caption ?? text ?? '',
+      parse_mode: 'HTML',
+    })
+  } else {
+    await bot.sendMessage(chatId, text, { parse_mode: 'HTML' })
+  }
 }

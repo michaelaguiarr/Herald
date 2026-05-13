@@ -20,6 +20,8 @@ const notificationShape = z.object({
   recipientEmail: z.string().nullable(),
   recipientTelegramId: z.string().nullable(),
   message: z.string(),
+  imageUrl: z.string().nullable(),
+  imageCaption: z.string().nullable(),
   status: z.nativeEnum(NotificationStatus),
   scheduledAt: z.date().nullable(),
   sentAt: z.date().nullable(),
@@ -34,6 +36,8 @@ const attemptShape = z.object({
   attemptedAt: z.date(),
   success: z.boolean(),
   errorMessage: z.string().nullable(),
+  whatsappMessageId: z.string().nullable(),
+  deliveryStatus: z.string().nullable(),
 })
 
 export async function notificationsRoutes(fastify: FastifyInstance) {
@@ -58,8 +62,13 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
           recipientPhone: z.string().optional(),
           recipientEmail: z.string().email().optional(),
           recipientTelegramId: z.string().optional(),
-          message: z.string().min(1),
-        }),
+          message: z.string().optional(),
+          imageUrl: z.string().url({ message: 'imageUrl deve ser uma URL válida' }).optional(),
+          imageCaption: z.string().optional(),
+        }).refine(
+          (d) => d.message || d.imageUrl,
+          { message: 'message ou imageUrl é obrigatório' }
+        ),
         response: { 202: notificationShape },
       },
     },
@@ -72,6 +81,8 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
         recipientEmail,
         recipientTelegramId,
         message,
+        imageUrl,
+        imageCaption,
       } = request.body
       const actor = request.user
 
@@ -97,7 +108,9 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
             recipientPhone: recipientPhone ?? null,
             recipientEmail: recipientEmail ?? null,
             recipientTelegramId: recipientTelegramId ?? null,
-            message,
+            message: message ?? '',
+            imageUrl: imageUrl ?? null,
+            imageCaption: imageCaption ?? null,
             status: NotificationStatus.PENDENTE,
           },
         })
@@ -206,6 +219,8 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
               attemptedAt: true,
               success: true,
               errorMessage: true,
+              whatsappMessageId: true,
+              deliveryStatus: true,
             },
           },
         },
@@ -308,15 +323,20 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
           recipientPhone: z.string().optional(),
           recipientEmail: z.string().email().optional(),
           recipientTelegramId: z.string().optional(),
-          message: z.string().min(1),
+          message: z.string().optional(),
+          imageUrl: z.string().url({ message: 'imageUrl deve ser uma URL válida' }).optional(),
+          imageCaption: z.string().optional(),
           scheduledAt: z.string().datetime({ message: 'scheduledAt deve ser ISO 8601 com timezone, ex: 2026-01-15T14:30:00Z' }),
-        }),
+        }).refine(
+          (d) => d.message || d.imageUrl,
+          { message: 'message ou imageUrl é obrigatório' }
+        ),
         response: { 202: notificationShape },
       },
     },
     async (request, reply) => {
       const { organizationId, channelType, recipientName, recipientPhone,
-              recipientEmail, recipientTelegramId, message, scheduledAt } = request.body
+              recipientEmail, recipientTelegramId, message, imageUrl, imageCaption, scheduledAt } = request.body
       const actor = request.user
 
       await assertOrgAccess(actor, organizationId)
@@ -341,7 +361,9 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
             recipientPhone: recipientPhone ?? null,
             recipientEmail: recipientEmail ?? null,
             recipientTelegramId: recipientTelegramId ?? null,
-            message,
+            message: message ?? '',
+            imageUrl: imageUrl ?? null,
+            imageCaption: imageCaption ?? null,
             status: NotificationStatus.AGENDADO,
             scheduledAt: scheduledDate,
           },

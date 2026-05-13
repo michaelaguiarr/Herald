@@ -4,7 +4,11 @@ import { sendViaEmail, EmailCredentials } from './email/nodemailer.client'
 import { whatsappSessionManager } from './whatsapp/session.manager'
 import { sendViaTelegram, TelegramCredentials } from './telegram/telegram.client'
 
-export async function dispatch(channel: Channel, notification: Notification): Promise<void> {
+export interface DispatchResult {
+  whatsappMessageId?: string  // set only for WHATSAPP channels — used for delivery receipts
+}
+
+export async function dispatch(channel: Channel, notification: Notification): Promise<DispatchResult> {
   const raw = channel.credentials as { encrypted: string }
   const credentials = JSON.parse(decrypt(raw.encrypted)) as Record<string, unknown>
 
@@ -17,21 +21,27 @@ export async function dispatch(channel: Channel, notification: Notification): Pr
         credentials as unknown as EmailCredentials,
         notification.recipientEmail,
         notification.recipientName,
-        notification.message
+        notification.message,
+        notification.imageUrl
+          ? { imageUrl: notification.imageUrl, imageCaption: notification.imageCaption ?? undefined }
+          : undefined
       )
-      break
+      return {}
     }
 
     case ChannelType.WHATSAPP: {
       if (!notification.recipientPhone) {
         throw new Error('recipientPhone ausente para canal WHATSAPP')
       }
-      await whatsappSessionManager.sendMessage(
+      const whatsappMessageId = await whatsappSessionManager.sendMessage(
         channel.id,
         notification.recipientPhone,
-        notification.message
+        notification.message,
+        notification.imageUrl
+          ? { imageUrl: notification.imageUrl, caption: notification.imageCaption ?? undefined }
+          : undefined
       )
-      break
+      return { whatsappMessageId }
     }
 
     case ChannelType.TELEGRAM: {
@@ -41,9 +51,12 @@ export async function dispatch(channel: Channel, notification: Notification): Pr
       await sendViaTelegram(
         credentials as unknown as TelegramCredentials,
         notification.recipientTelegramId,
-        notification.message
+        notification.message,
+        notification.imageUrl
+          ? { imageUrl: notification.imageUrl, caption: notification.imageCaption ?? undefined }
+          : undefined
       )
-      break
+      return {}
     }
 
     default:
