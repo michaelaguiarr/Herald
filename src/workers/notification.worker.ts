@@ -7,6 +7,7 @@ import { selectChannels } from '../channels/channel-selector'
 import { dispatch } from '../channels/channel.dispatcher'
 import { enqueueAlert } from '../alerts/alert.service'
 import { writeAuditLog } from '../lib/audit'
+import { WhatsAppNumberNotFoundError, OptOutError } from '../channels/whatsapp/whatsapp-errors'
 import type { NotificationJobData } from '../queues/notification.queue'
 
 // 3 retry cycles after the initial attempt: +1h → +6h → +24h
@@ -55,17 +56,50 @@ async function processNotification(notificationId: string, attemptsMade: number)
   }
 
   const isLastAttempt = attemptsMade >= MAX_RETRY_CYCLES
-  const channels = await selectChannels(
-    notification.organizationId,
-    notification.channelType,
-    { recipientPhone: notification.recipientPhone }  // anti-spam deduplication
-  )
+
+  // opt-out check is inside selectChannels — catch OptOutError here as terminal
+  let channels: Awaited<ReturnType<typeof selectChannels>>
+  try {
+    channels = await selectChannels(
+      notification.organizationId,
+      notification.channelType,
+      { recipientPhone: notification.recipientPhone }
+    )
+  } catch (err) {
+    if (err instanceof OptOutError) {
+      console.warn(`[worker] OPT-OUT ${notificationId}: ${err.phone}`)
+      await prisma.notification.update({
+        where: { id: notificationId },
+        data: { status: NotificationStatus.FALHOU_DEFINITIVO, retryCycle: attemptsMade },
+      })
+      enqueueAlert(
+        'FALHOU_DEFINITIVO',
+        notification.organizationId,
+        `Notificação para <b>${notification.recipientName}</b> não entregue: ` +
+          `número ${err.phone} optou por não receber notificações.`,
+        notificationId
+      )
+      writeAuditLog({
+        userId: null,
+        organizationId: notification.organizationId,
+        action: 'NOTIFICATION_FALHOU_DEFINITIVO',
+        targetId: notificationId,
+        targetType: 'notification',
+        metadata: {
+          retryCycle: attemptsMade,
+          channelType: notification.channelType,
+          reason: 'opt_out',
+          phone: err.phone,
+          actor: 'system:notification_worker',
+        },
+      }).catch((e) => console.error('[worker] Falha ao gravar audit_log opt-out:', e))
+      return  // clean return — no throw, no BullMQ retry
+    }
+    throw err  // other selectChannels errors propagate normally
+  }
 
   if (channels.length === 0) {
-    console.error(
-      `[worker] Sem canal ${notification.channelType} elegível — org ${notification.organizationId} ` +
-        `(ciclo ${attemptsMade}/${MAX_RETRY_CYCLES})`
-    )
+
     // Debt: no NotificationAttempt record here (channelId FK is required).
     // Tracked in CLAUDE.md: "notification_attempt sem canal disponível".
     if (isLastAttempt) {
@@ -106,12 +140,14 @@ async function processNotification(notificationId: string, attemptsMade: number)
   // ── Pool rotation ──────────────────────────────────────────────────────────
   const attemptedAt = new Date()
   let deliveredChannelId: string | null = null
+  let whatsappMessageId: string | undefined = undefined
   let lastError: string | null = null
 
   for (const channel of channels) {
     try {
-      await dispatch(channel, notification)
+      const result = await dispatch(channel, notification)
       deliveredChannelId = channel.id
+      whatsappMessageId = result.whatsappMessageId
       break
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err)
@@ -133,6 +169,39 @@ async function processNotification(notificationId: string, attemptsMade: number)
           data: { lastUsedAt: attemptedAt },
         }),
       ])
+
+      // Terminal error — recipient not on WhatsApp. No other channel or retry
+      // will fix this. Mark FALHOU_DEFINITIVO immediately without throwing,
+      // so BullMQ sees the job as completed (not failed) and skips retry.
+      if (err instanceof WhatsAppNumberNotFoundError) {
+        console.warn(`[worker] TERMINAL ${notificationId}: ${lastError}`)
+        await prisma.notification.update({
+          where: { id: notificationId },
+          data: { status: NotificationStatus.FALHOU_DEFINITIVO, retryCycle: attemptsMade },
+        })
+        enqueueAlert(
+          'FALHOU_DEFINITIVO',
+          notification.organizationId,
+          `Notificação para <b>${notification.recipientName}</b> não entregue: ` +
+            `número ${err.phone} não existe no WhatsApp.`,
+          notificationId
+        )
+        writeAuditLog({
+          userId: null,
+          organizationId: notification.organizationId,
+          action: 'NOTIFICATION_FALHOU_DEFINITIVO',
+          targetId: notificationId,
+          targetType: 'notification',
+          metadata: {
+            retryCycle: attemptsMade,
+            channelType: notification.channelType,
+            reason: 'numero_nao_existe_no_whatsapp',
+            phone: err.phone,
+            actor: 'system:notification_worker',
+          },
+        }).catch((e) => console.error('[worker] Falha ao gravar audit_log:', e))
+        return  // clean return — no throw, no BullMQ retry
+      }
     }
   }
 
@@ -146,6 +215,11 @@ async function processNotification(notificationId: string, attemptsMade: number)
           attemptedAt,
           success: true,
           errorMessage: null,
+          // WhatsApp only: save Baileys key.id for delivery receipt tracking
+          ...(whatsappMessageId && {
+            whatsappMessageId,
+            deliveryStatus: 'SERVER_ACK',  // initial status — advances via messages.update events
+          }),
         },
       }),
       prisma.notification.update({
