@@ -5,6 +5,7 @@ import { redis } from '../lib/redis'
 import { prisma } from '../lib/prisma'
 import { env } from '../lib/env'
 import { schedulerQueue, type SchedulerJobData } from '../queues/scheduler.queue'
+import { resetJidCacheStats } from '../lib/whatsapp-jid.cache'
 
 const DAILY_RESET_CRON    = '0 0 * * *'  // midnight
 const WARMUP_PROMOTE_CRON = '5 0 * * *'  // 00:05, right after daily reset
@@ -44,12 +45,13 @@ export function startSchedulerWorker() {
       switch (job.data.task) {
 
         case 'daily-reset-sent-today': {
-          const result = await prisma.channel.updateMany({
-            data: { sentToday: 0 },
-          })
+          const [channelResult] = await Promise.all([
+            prisma.channel.updateMany({ data: { sentToday: 0 } }),
+            resetJidCacheStats(),
+          ])
           console.log(
-            `[scheduler] daily-reset: sent_today zerado em ${result.count} canal(is) — ` +
-              new Date().toISOString()
+            `[scheduler] daily-reset: sent_today zerado em ${channelResult.count} canal(is), ` +
+              `jid-cache stats resetados — ${new Date().toISOString()}`
           )
           break
         }
