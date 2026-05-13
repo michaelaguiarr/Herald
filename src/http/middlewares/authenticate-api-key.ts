@@ -1,4 +1,5 @@
 import { FastifyReply, FastifyRequest } from 'fastify'
+import { createHash } from 'crypto'
 import { UserRole } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { AppError } from '../errors/app-error'
@@ -13,13 +14,15 @@ export async function authenticateApiKey(
   request: FastifyRequest,
   _reply: FastifyReply
 ): Promise<void> {
-  const apiKey = request.headers['x-api-key']
-  if (!apiKey || typeof apiKey !== 'string') {
+  const rawKey = request.headers['x-api-key']
+  if (!rawKey || typeof rawKey !== 'string') {
     throw new AppError(401, 'X-Api-Key ausente ou inválida')
   }
 
+  const hashedKey = createHash('sha256').update(rawKey).digest('hex')
+
   const org = await prisma.organization.findUnique({
-    where: { apiKey },
+    where: { apiKey: hashedKey },
     select: { id: true, active: true, type: true },
   })
 

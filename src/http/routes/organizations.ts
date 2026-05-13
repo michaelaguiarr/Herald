@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { ZodTypeProvider } from 'fastify-type-provider-zod'
 import { z } from 'zod'
 import { OrgType, UserRole } from '@prisma/client'
-import { randomBytes } from 'crypto'
+import { randomBytes, createHash } from 'crypto'
 import { prisma } from '../../lib/prisma'
 import { AppError } from '../errors/app-error'
 import { authenticate } from '../middlewares/authenticate'
@@ -42,16 +42,16 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { name, type, parentId } = request.body
 
-      if (type === OrgType.COMUNIDADE) {
-        if (!parentId) throw new AppError(400, 'Comunidade deve ter uma paróquia pai')
+      if (type === OrgType.FILIAL) {
+        if (!parentId) throw new AppError(400, 'Filial deve ter uma organização pai')
         const parent = await prisma.organization.findUnique({ where: { id: parentId } })
-        if (!parent || parent.type !== OrgType.PAROQUIA || !parent.active) {
-          throw new AppError(400, 'Paróquia pai não encontrada ou inativa')
+        if (!parent || parent.type !== OrgType.ORGANIZACAO || !parent.active) {
+          throw new AppError(400, 'Organização pai não encontrada ou inativa')
         }
       }
 
-      if (type === OrgType.PAROQUIA && parentId) {
-        throw new AppError(400, 'Paróquia não pode ter organização pai')
+      if (type === OrgType.ORGANIZACAO && parentId) {
+        throw new AppError(400, 'Organização raiz não pode ter organização pai')
       }
 
       const org = await prisma.$transaction(async (tx) => {
@@ -242,10 +242,11 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
       const org = await prisma.organization.findUnique({ where: { id, active: true } })
       if (!org) throw new AppError(404, 'Organização não encontrada')
 
-      const apiKey = `hld_${randomBytes(32).toString('hex')}`
+      const rawKey = `hld_${randomBytes(32).toString('hex')}`
+      const hashedKey = createHash('sha256').update(rawKey).digest('hex')
 
       await prisma.$transaction(async (tx) => {
-        await tx.organization.update({ where: { id }, data: { apiKey } })
+        await tx.organization.update({ where: { id }, data: { apiKey: hashedKey } })
         await writeAuditLog(
           {
             userId: request.user.sub,
@@ -259,7 +260,7 @@ export async function organizationsRoutes(fastify: FastifyInstance) {
         )
       })
 
-      return reply.send({ apiKey })
+      return reply.send({ apiKey: rawKey })
     }
   )
 

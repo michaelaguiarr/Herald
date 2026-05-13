@@ -47,16 +47,16 @@ export async function buildEntityOrgFilter(user: {
   }
 
   if (user.role === UserRole.SUPER_ADMIN) {
-    const paroquiaId = user.organizationId ?? ''
-    const comunidades = await prisma.organization.findMany({
-      where: { parentId: paroquiaId, active: true },
+    const orgPaiId = user.organizationId ?? ''
+    const filiais = await prisma.organization.findMany({
+      where: { parentId: orgPaiId, active: true },
       select: { id: true },
     })
-    const orgIds = [paroquiaId, ...comunidades.map((c) => c.id)]
+    const orgIds = [orgPaiId, ...filiais.map((f) => f.id)]
     return { organizationId: { in: orgIds } }
   }
 
-  // ADMIN, OPERATOR — apenas a própria comunidade
+  // ADMIN, OPERATOR — apenas a própria filial
   return { organizationId: user.organizationId ?? '' }
 }
 

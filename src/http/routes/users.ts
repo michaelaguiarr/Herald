@@ -34,10 +34,10 @@ async function validateCreationRules(
       return
     }
     if (targetRole === UserRole.SUPER_ADMIN) {
-      if (!targetOrgId) throw new AppError(400, 'SUPER_ADMIN deve pertencer a uma paróquia')
+      if (!targetOrgId) throw new AppError(400, 'SUPER_ADMIN deve pertencer a uma organização')
       const org = await prisma.organization.findUnique({ where: { id: targetOrgId } })
-      if (!org || org.type !== OrgType.PAROQUIA || !org.active)
-        throw new AppError(400, 'Paróquia não encontrada ou inativa')
+      if (!org || org.type !== OrgType.ORGANIZACAO || !org.active)
+        throw new AppError(400, 'Organização não encontrada ou inativa')
       return
     }
     throw new AppError(403, 'OWNER só pode criar usuários OWNER ou SUPER_ADMIN')
@@ -46,12 +46,12 @@ async function validateCreationRules(
   if (creator.role === UserRole.SUPER_ADMIN) {
     if (targetRole !== UserRole.ADMIN)
       throw new AppError(403, 'SUPER_ADMIN só pode criar usuários ADMIN')
-    if (!targetOrgId) throw new AppError(400, 'ADMIN deve pertencer a uma comunidade')
+    if (!targetOrgId) throw new AppError(400, 'ADMIN deve pertencer a uma filial')
     const org = await prisma.organization.findUnique({ where: { id: targetOrgId } })
-    if (!org || org.type !== OrgType.COMUNIDADE || !org.active)
-      throw new AppError(400, 'Comunidade não encontrada ou inativa')
+    if (!org || org.type !== OrgType.FILIAL || !org.active)
+      throw new AppError(400, 'Filial não encontrada ou inativa')
     if (org.parentId !== creator.organizationId)
-      throw new AppError(403, 'Comunidade não pertence à sua paróquia')
+      throw new AppError(403, 'Filial não pertence à sua organização')
     return
   }
 
