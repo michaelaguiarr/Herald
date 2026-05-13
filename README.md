@@ -100,6 +100,142 @@ Senha:  Admin@1234
 
 ---
 
+## Deploy em Produção (VPS)
+
+### Pré-requisitos
+
+- Ubuntu 22.04 / 24.04
+- Docker e Docker Compose instalados
+- Acesso SSH à VPS
+
+### 1. Clonar o repositório
+
+```bash
+ssh usuario@IP_DA_VPS
+git clone https://github.com/seu-usuario/herald.git
+cd herald
+```
+
+### 2. Configurar variáveis de ambiente
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Gere strings seguras para os campos criptográficos:
+
+```bash
+# Rodar 3 vezes — uma para JWT_SECRET, uma para CRYPTO_KEY, uma para POSTGRES_PASSWORD
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+> `CRYPTO_KEY` deve ter **exatamente 32 caracteres** (AES-256). Use os primeiros 32 do output hex.
+
+### 3. Configurar o frontend
+
+```bash
+# Substitua IP_DA_VPS pelo IP ou domínio da sua VPS
+echo "VITE_API_URL=http://IP_DA_VPS" > dashboard/.env.production
+```
+
+Se estiver usando domínio com HTTPS: `echo "VITE_API_URL=https://seu-dominio.com" > dashboard/.env.production`
+
+### 4. Criar diretório de sessões WhatsApp
+
+```bash
+mkdir -p whatsapp-sessions
+```
+
+### 5. Subir os serviços
+
+```bash
+docker compose up --build -d
+```
+
+Isso sobe: **API** (porta 3000 interna) + **PostgreSQL** + **Redis** + **Frontend** (nginx na porta 80).
+
+### 6. Rodar as migrations
+
+```bash
+docker compose exec api npx prisma migrate deploy
+```
+
+### 7. Rodar o seed
+
+Cria o primeiro usuário OWNER. **Guarde as credenciais exibidas.**
+
+```bash
+docker compose exec api npx prisma db seed
+```
+
+Credenciais padrão (altere no `.env` antes do seed ou via dashboard após o login):
+
+```
+Email: admin@herald.app
+Senha: Admin@1234
+```
+
+### 8. Verificar o deploy
+
+```bash
+# Status dos containers
+docker compose ps
+
+# Logs da API (últimas 50 linhas)
+docker compose logs api --tail=50
+
+# Testar a API
+curl http://IP_DA_VPS/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@herald.app","password":"Admin@1234"}'
+```
+
+### Acesso
+
+| Serviço | URL |
+| ------- | --- |
+| Dashboard | `http://IP_DA_VPS` |
+| API REST | `http://IP_DA_VPS/v1` |
+| Swagger UI | `http://IP_DA_VPS/docs` |
+
+### Atualizar para nova versão
+
+```bash
+git pull
+docker compose up --build -d
+docker compose exec api npx prisma migrate deploy
+```
+
+### Variáveis de ambiente obrigatórias
+
+| Variável | Descrição | Obrigatória |
+| -------- | --------- | ----------- |
+| `NODE_ENV` | Ambiente (`development` \| `production`) | ✅ |
+| `PORT` | Porta da API (padrão: `3000`) | ✅ |
+| `APP_URL` | URL base da aplicação (usada em links de email) | ✅ |
+| `DATABASE_URL` | Connection string do PostgreSQL | ✅ |
+| `POSTGRES_PASSWORD` | Senha do PostgreSQL (docker-compose) | ✅ |
+| `POSTGRES_USER` | Usuário do PostgreSQL (padrão: `herald`) | Opcional |
+| `POSTGRES_DB` | Nome do banco (padrão: `herald`) | Opcional |
+| `REDIS_URL` | Connection string do Redis | ✅ |
+| `JWT_SECRET` | Segredo JWT — mínimo 32 caracteres | ✅ |
+| `CRYPTO_KEY` | Chave AES-256 — **exatamente 32 caracteres** | ✅ |
+| `SMTP_HOST` | Servidor SMTP (recuperação de senha + alertas) | Opcional |
+| `SMTP_PORT` | Porta SMTP (padrão: `587`) | Opcional |
+| `SMTP_USER` | Usuário SMTP | Opcional |
+| `SMTP_PASS` | Senha SMTP | Opcional |
+| `SMTP_FROM` | Remetente SMTP (ex: `"Herald <no-reply@dominio.com>"`) | Opcional |
+| `WA_SESSIONS_PATH` | Diretório de sessões Baileys (padrão: `./whatsapp-sessions`) | Opcional |
+| `DAILY_RESET_TZ` | Timezone do cron de reset diário — nome IANA (padrão: `UTC`). Brasil: `America/Sao_Paulo` | Opcional |
+| `SEED_OWNER_NAME` | Nome do usuário OWNER criado no seed | Opcional |
+| `SEED_OWNER_EMAIL` | Email do OWNER (padrão: `admin@herald.app`) | Opcional |
+| `SEED_OWNER_PASSWORD` | Senha do OWNER (padrão: `Admin@1234`) | Opcional |
+
+> Sem SMTP configurado, emails de recuperação de senha e alertas são apenas logados no console.
+
+---
+
 ## Comandos
 
 ```bash
@@ -118,26 +254,37 @@ npm test                 # todos os testes
 ## Produção (Docker Compose)
 
 ```bash
-docker compose up -d          # sobe API + Postgres + Redis
-docker compose logs -f api    # acompanhar logs
-docker compose up -d --build api  # rebuild após deploy
+# Defina as variáveis obrigatórias antes de subir (ou use um .env)
+export POSTGRES_PASSWORD=senha-segura
+export JWT_SECRET=segredo-com-no-minimo-32-chars
+export CRYPTO_KEY=chave-aes256-exatamente-32chars
+
+docker compose up -d               # API + Postgres + Redis + Frontend
+docker compose logs -f api         # acompanhar logs da API
+docker compose up -d --build api   # rebuild após deploy
 ```
+
+O dashboard React é servido via nginx na porta **80** com proxy reverso para `/v1/*` e `/docs`.
 
 ---
 
 ## Variáveis de ambiente
 
-| Variável            | Descrição                                  | Obrigatória |
-| ------------------- | ------------------------------------------ | ----------- |
-| `DATABASE_URL`      | Connection string do PostgreSQL            | ✅          |
-| `REDIS_URL`         | Connection string do Redis                 | ✅          |
-| `JWT_SECRET`        | Segredo JWT (mínimo 32 caracteres)         | ✅          |
-| `CRYPTO_KEY`        | Chave AES-256 (exatamente 32 caracteres)   | ✅          |
-| `SMTP_HOST`         | Servidor SMTP para recuperação de senha    | Opcional    |
-| `SMTP_PORT`         | Porta SMTP (padrão: 587)                   | Opcional    |
-| `SMTP_USER`         | Usuário SMTP                               | Opcional    |
-| `SMTP_PASS`         | Senha SMTP                                 | Opcional    |
-| `APP_URL`           | URL base da aplicação                      | Opcional    |
+| Variável            | Descrição                                         | Obrigatória |
+| ------------------- | ------------------------------------------------- | ----------- |
+| `DATABASE_URL`      | Connection string do PostgreSQL                   | ✅          |
+| `REDIS_URL`         | Connection string do Redis                        | ✅          |
+| `JWT_SECRET`        | Segredo JWT (mínimo 32 caracteres)                | ✅          |
+| `CRYPTO_KEY`        | Chave AES-256 (exatamente 32 caracteres)          | ✅          |
+| `POSTGRES_PASSWORD` | Senha do PostgreSQL (docker-compose)              | ✅          |
+| `POSTGRES_USER`     | Usuário do PostgreSQL (padrão: `herald`)          | Opcional    |
+| `POSTGRES_DB`       | Nome do banco (padrão: `herald`)                  | Opcional    |
+| `SMTP_HOST`         | Servidor SMTP para recuperação de senha e alertas | Opcional    |
+| `SMTP_PORT`         | Porta SMTP (padrão: 587)                          | Opcional    |
+| `SMTP_USER`         | Usuário SMTP                                      | Opcional    |
+| `SMTP_PASS`         | Senha SMTP                                        | Opcional    |
+| `APP_URL`           | URL base da aplicação                             | Opcional    |
+| `DAILY_RESET_TZ`    | Timezone para cron de reset diário (padrão: UTC)  | Opcional    |
 
 Sem SMTP configurado, emails são apenas logados no console.
 
@@ -181,10 +328,10 @@ Worker tenta canal/número
 | ---- | -------------------------------------- | ---------- |
 | 1    | Fundação: auth, orgs, usuários         | ✅ Completa |
 | 2    | Entrega via Email + fila BullMQ        | ✅ Completa |
-| 3    | WhatsApp: Baileys + QR Code            | 🔲 Pendente |
-| 4    | Telegram + retry + alertas críticos    | 🔲 Pendente |
-| 5    | Anti-banimento + agendamento + broadcast | 🔲 Pendente |
-| 6    | Dashboard React + auditoria completa   | 🔲 Pendente |
+| 3    | WhatsApp: Baileys + QR Code + SSE      | ✅ Completa |
+| 4    | Telegram + retry ciclos + alertas      | ✅ Completa |
+| 5    | Anti-banimento + agendamento + broadcast + API Key | ✅ Completa |
+| 6    | Dashboard React + auditoria completa   | ✅ Completa |
 
 ---
 

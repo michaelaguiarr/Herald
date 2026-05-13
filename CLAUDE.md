@@ -273,21 +273,217 @@ O histórico completo está nos commits — esta seção serve como referência 
 
 ---
 
+## Bug Fixes Pós-Fase 5 (Regressão WhatsApp)
+
+Regressão introduzida em `2587674` (Fase 5): notificações voltaram a ser marcadas ENVIADO sem entrega real. Três correções aplicadas.
+
+| Bug | Commit introdutor | Causa | Correção aplicada |
+| --- | ----------------- | ----- | ----------------- |
+| **`onWhatsApp` fallthrough para JID raw** | `2587674` | catch do `onWhatsApp` relançava apenas "não encontrado"; qualquer outro erro (timeout, sessão instável) fazia fallthrough com JID raw — Baileys retornava `key.id + status≥1` para JID errado, marcando ENVIADO sem entrega | `baileys.client.ts`: **todo** erro de `onWhatsApp` agora é relançado. JID sem resolução LID nunca chega ao `sendMessage`. Worker captura a exceção, registra attempt `success=false` e agenda retry. |
+| **Guard `check?.exists === false` não capturava array vazio** | — (pós-Fase 5) | Baileys v7 retorna `[]` (array vazio) para números inexistentes — não `{ exists: false }`. Strict equality `undefined === false → false` deixava o guard passar silenciosamente. `resolvedJid` ficava como JID raw, Baileys aceitava com SERVER_ACK, notificação marcada ENVIADO. | `baileys.client.ts` linha 182: guard alterado para `!check \|\| check.exists === false`. `!check` captura array vazio (`check = undefined`); `check.exists === false` captura a forma explícita. Cache só é escrito quando o guard passa e `check.exists && check.jid` são verdadeiros — número inválido nunca é cacheado. |
+| **Desconexão controlada de sessão WhatsApp** | — | Faltava endpoint para encerrar intencionalmente uma sessão sem gerar novo QR Code automaticamente. Útil para troca de número ou encerramento definitivo. | `POST /v1/channels/:id/disconnect`: chama `whatsappSessionManager.disconnectSession(id)` que para a sessão Baileys (`_manualDisconnect=true`, `_shouldReconnect=false`), remove os arquivos de auth, atualiza DB para DISCONNECTED e grava `CHANNEL_DISCONNECTED` no audit_log. Diferença vs `/reconnect`: disconnect encerra sem iniciar nova sessão; reconnect encerra + gera QR. `_manualDisconnect` flag no BaileysClient sinaliza que a desconexão foi intencional — cancela timer de alerta e suprime reconexão. |
+| **Reconexão com backoff exponencial** | — | `BaileysClient` reconectava em 5s fixos. Com múltiplos canais caindo simultaneamente (queda de rede, restart), todos tentavam reconectar no mesmo segundo — thundering herd que sobrecarrega o WA. | `src/lib/backoff.ts`: `calculateBackoff(attempt, { baseMs=2000, maxMs=60000, jitterMs=1000 })` — fórmula `min(base * 2^attempt, max) + random(0, jitter)`. `_reconnectAttempt` incrementa a cada desconexão, reseta a 0 em `connection=open`. BANNED não reconecta. Log: `[wa:reconnect] channelId tentativa=N delay=Xms próxima=HH:MM:SS` |
+| **Opt-out por resposta WhatsApp** | — | Destinatários que respondem "PARAR", "STOP", "CANCELAR", "SAIR", "REMOVER" ou "DESCADASTRAR" para o número do Herald são automaticamente registrados em `opt_out` e deixam de receber notificações. `OptOutError` é terminal (sem retry). Admin pode reativar via `DELETE /v1/opt-outs/:phone`. | `src/channels/whatsapp/whatsapp-errors.ts`: `OptOutError`. `baileys.client.ts`: listener `messages.upsert`, emite `'opt-out-request'`. `session.manager.ts`: upsert em `opt_out`, invalida cache JID, envia confirmação via `sendDirectMessage`. `channel-selector.ts`: verifica `opt_out` antes de selecionar canais, lança `OptOutError`. `notification.worker.ts`: `OptOutError` → `FALHOU_DEFINITIVO` sem throw → sem retry. `opt-outs.ts`: `GET /v1/opt-outs` (lista paginada) + `DELETE /v1/opt-outs/:phone` (reativação). |
+| **Número inexistente entrava no ciclo de retry** | — (pós-Fase 5) | `WhatsAppNumberNotFoundError` era capturado e re-embalado como `Error` genérico, tratado como erro transiente. BullMQ agendava retries (+1h/+6h/+24h) para um número que nunca vai existir. | `WhatsAppNumberNotFoundError` em `src/channels/whatsapp/whatsapp-errors.ts`. `baileys.client.ts` catch re-lança o tipo original sem embrulhar. `notification.worker.ts` detecta `instanceof WhatsAppNumberNotFoundError` no loop de pool rotation → marca `FALHOU_DEFINITIVO` imediatamente + `return` sem `throw` (BullMQ não agenda retry). Outros erros mantêm comportamento de retry. |
+| **Async gap no handler de warmup** | `2587674` | Fase 5 adicionou lógica de warmup com query DB assíncrona dentro do handler de `status-change`. Entre `setStatus('ACTIVE')` (síncrono, memória) e o `prisma.channel.update` (assíncrono, DB), o canal aparecia como ACTIVE no banco. Worker podia selecionar o canal e chamar `sendMessage` durante essa janela com sessão instável. | `session.manager.ts`: query `findUnique` movida para **antes** do listener. Flag `firstConnectionRecorded` (mutable) flippada **sincronicamente** antes de qualquer `await`, eliminando o gap. Log do erro de update melhorado — não silencia falhas críticas de estado. |
+| **Canal WARMING/ACTIVE sem `connectedAt` elegível** | `2587674` | `channel-selector.ts` incluiu canais WARMING com `connectedAt ≠ null` mas não protegia canais ACTIVE com `connectedAt=null` (status padrão ao criar canal). Canal criado mas nunca autenticado (QR não escaneado) podia ser selecionado quando DB mostrava ACTIVE. | `channel-selector.ts`: para `channelType === WHATSAPP`, filtro pós-query em JavaScript: `candidates.filter(ch => ch.connectedAt !== null)`. Canal sem `connectedAt` nunca chega ao dispatch, independente do status DB. Email/Telegram não são afetados (não usam `connectedAt`). |
+| **Race condition residual no `/reconnect`** | `2587674` | Endpoint `/reconnect` setava DB para `WARMING` imediatamente. `selectChannels` via Fix 3 permitia WARMING + connectedAt set. Novo `BaileysClient` criado por `startSession` tem `_status='WARMING'` (construtor). Dispatch durante os segundos entre reconnect e QR-scan resultava em `success=false` com "Sessão não está ativa (status: WARMING)" — attempt desnecessário, notificação ficava PENDENTE. | `channels.ts` `/reconnect`: status setado para `DISCONNECTED` (não `WARMING`). DISCONNECTED é excluído pelo selector → zero attempts durante reconexão. `WARMING` agora é setado exclusivamente pelo `session.manager` quando Baileys dispara `connection.open`. `connectedAt` preservado intacto (histórico de warmup). |
+| **`connectedAt` ausente no response da API** | — | `channelShape` em `channels.ts` não incluía `connectedAt`. Campo estava no banco mas omitido na serialização Zod/Fastify. Operadores não conseguiam distinguir "canal conectado há X dias" de "canal nunca autenticado" — gerou falso positivo de diagnóstico. | `connectedAt: z.date().nullable()` adicionado ao `channelShape`. Agora visível em `GET /v1/channels` e `GET /v1/channels/:id`. |
+
+---
+
+## Suporte a imagens em notificações
+
+Notificações podem incluir imagem com legenda nos três canais.
+
+### Campos novos em `Notification`
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `imageUrl` | `String?` | URL pública da imagem |
+| `imageCaption` | `String?` | Legenda exibida abaixo da imagem |
+
+### Comportamento por canal
+
+| Canal | Comportamento |
+|---|---|
+| **WhatsApp** | Baixa a imagem (buffer, 10s timeout) e envia via Baileys `{ image: Buffer, caption }` |
+| **Email** | Insere `<img src="imageUrl">` inline no HTML. URL acessada pelo cliente de email |
+| **Telegram** | Usa `bot.sendPhoto(chatId, imageUrl, { caption })` — Telegram baixa server-side |
+
+### Validações
+
+- `imageUrl` deve ser URL válida (`z.string().url()`)
+- `message` ou `imageUrl` — pelo menos um obrigatório
+- `message` pode ser omitido quando `imageUrl` está presente (`message` fica `""` no banco)
+- URL com timeout de download (10s) para WhatsApp — falha com mensagem clara
+
+### Limitações
+
+- `imageUrl` deve ser **publicamente acessível** sem autenticação
+- WhatsApp: download no servidor no momento do envio — URL deve existir durante a janela de retry
+- Tamanho máximo recomendado: <5MB (limite do WA)
+
+---
+
+## Read Receipts WhatsApp (Delivery ACK)
+
+Implementado tracking de entrega de ponta a ponta para notificações WhatsApp.
+
+### Modelo de dados
+
+`NotificationAttempt` ganhou dois campos opcionais (nullable para retrocompatibilidade):
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `whatsappMessageId` | `String?` | `key.id` retornado pelo Baileys no envio |
+| `deliveryStatus` | `String?` | `SERVER_ACK` → `DELIVERY_ACK` → `READ` |
+
+### Fluxo
+
+```
+sendMessage() → key.id → attempt.whatsappMessageId = key.id
+                          attempt.deliveryStatus   = 'SERVER_ACK'
+
+WA server → Baileys messages.update event
+  → BaileysClient emite 'delivery-update' { messageId, status }
+  → session.manager ouve, busca attempt por whatsappMessageId
+  → atualiza deliveryStatus (rank-guarded: nunca regride)
+```
+
+### Status possíveis em `deliveryStatus`
+
+| Valor | Significado |
+|---|---|
+| `SERVER_ACK` | WA server recebeu a mensagem |
+| `DELIVERY_ACK` | Dispositivo do destinatário recebeu |
+| `READ` | Destinatário abriu o chat |
+
+### Rank-guard
+
+O listener em `session.manager.ts` só avança o status, nunca retrocede. Rank interno: `SERVER_ACK=1 < DELIVERY_ACK=2 < READ=3`. Updates fora de ordem (possíveis em reconexões) são descartados silenciosamente.
+
+### Retrocompatibilidade
+
+Attempts criados antes dessa feature têm `whatsappMessageId=null` e `deliveryStatus=null`. Isso é esperado — campos opcionais, sem breaking change no schema.
+
+### Observação sobre PENDING
+
+O evento `messages.update` com `status=1` (PENDING) é ignorado — é estado local do Baileys, não indica confirmação do servidor. Tracking começa a partir de `status=2` (SERVER_ACK).
+
+---
+
+## GET /v1/dashboard/failed — categorização de falhas
+
+### failureReason — lógica de classificação (em ordem de prioridade)
+
+| Categoria | Critério |
+|---|---|
+| `OPT_OUT` | `recipientPhone` existe em `opt_out` para a mesma `organizationId` |
+| `NO_CHANNEL` | `attempts.length === 0` e não é OPT_OUT (sem canal elegível no momento da falha) |
+| `NUMBER_NOT_FOUND` | Último attempt tem `errorMessage` contendo `"não encontrado no WhatsApp"` |
+| `DELIVERY_FAILURE` | Esgotou ciclos de retry por erro de conexão/entrega (fallback) |
+
+### Campos adicionados ao response
+
+```json
+{
+  "summary": {
+    "OPT_OUT": 2,
+    "NUMBER_NOT_FOUND": 3,
+    "DELIVERY_FAILURE": 4,
+    "NO_CHANNEL": 1
+  },
+  "data": [
+    {
+      "...campos existentes...",
+      "failureReason": "NUMBER_NOT_FOUND",
+      "attempts": [{ "id", "channelId", "success", "errorMessage", "whatsappMessageId", "deliveryStatus" }]
+    }
+  ],
+  "total": 10,
+  "page": 1,
+  "pages": 1
+}
+```
+
+### Filtro por categoria
+
+`GET /v1/dashboard/failed?failureReason=OPT_OUT`
+
+Valores: `OPT_OUT | NUMBER_NOT_FOUND | DELIVERY_FAILURE | NO_CHANNEL`
+
+### Implementação
+
+Classificação feita em memória após busca com `include: { attempts }` + batch-load de `opt_out` para as phones do resultado. `summary` calcula a distribuição completa ANTES do filtro por `failureReason` — garante contagens corretas independente do filtro ativo.
+
+---
+
+## Cache de JID WhatsApp
+
+### Objetivo
+Evitar a chamada `onWhatsApp()` do Baileys a cada envio. Para destinatários recorrentes (dizimistas, broadcasts), o JID é sempre o mesmo — a chamada repetida só adiciona latência.
+
+### Redis keys
+
+| Chave | Tipo | Descrição |
+|---|---|---|
+| `whatsapp:jid:{digits}` | `STRING` | JID resolvido, TTL 24h |
+| `whatsapp:jid:stats:hits` | `INT` | Contador de cache hits (reset diário) |
+| `whatsapp:jid:stats:misses` | `INT` | Contador de cache misses (reset diário) |
+
+### Arquivo
+`src/lib/whatsapp-jid.cache.ts` — exports: `getCachedJid`, `setCachedJid`, `invalidateCachedJid`, `getJidCacheStats`, `resetJidCacheStats`
+
+### Fluxo em `BaileysClient.sendMessage`
+
+```
+HIT  → [wa:cache] HIT +5595991234567 → 5595991234567@s.whatsapp.net
+         usa JID direto, skipa onWhatsApp()
+
+MISS → [wa:cache] MISS +5595991234567 → resolvendo via onWhatsApp()
+         chama onWhatsApp(), cacheia resultado, continua envio
+
+ERRO → não cacheia — próximo envio tenta onWhatsApp() novamente
+```
+
+### TTL: 24h
+Cobre o ciclo de mensagens recorrentes (dizimistas mensais). JIDs são estáveis enquanto o usuário não troca de dispositivo. O pior caso de stale entry é um envio falhando silenciosamente se o usuário migrou de Android para iPhone no dia (raro) — o sistema faz retry no ciclo seguinte que vai recachear o novo JID.
+
+### Métricas
+`GET /v1/dashboard/summary` expõe `jidCacheStats: { hits, misses }` diários. Resetado pelo cron `daily-reset-sent-today` junto com `sentToday`.
+
+### Limitação conhecida
+O cache pode ficar stale por até 24h se um usuário mudar de dispositivo (troca Android→iPhone causa migração de JID). Neste caso, o primeiro envio pós-migração pode usar o JID antigo. Baileys retornará erro ou SERVER_ACK sem entrega; o worker registra o attempt como falha e o operador pode reenviar, o que vai causar um cache miss (JID antigo foi descartado na falha).
+
+**Invalidação manual**: `invalidateCachedJid(phone)` remove a entrada. Pode ser chamada se necessário (ex: número relatado como não recebendo mensagens).
+
+### Arquivos alterados em Read Receipts
+
+- `prisma/schema.prisma` — 2 campos em `NotificationAttempt`
+- `prisma/migrations/20260513042031_add_delivery_status/migration.sql`
+- `src/channels/whatsapp/baileys.client.ts` — `sendMessage` retorna `messageId`, listener `messages.update`
+- `src/channels/whatsapp/session.manager.ts` — `sendMessage` retorna `messageId`, listener `delivery-update`
+- `src/channels/channel.dispatcher.ts` — `dispatch` retorna `DispatchResult { whatsappMessageId? }`
+- `src/workers/notification.worker.ts` — captura e salva `whatsappMessageId` + status inicial
+- `src/http/routes/notifications.ts` — `attemptShape` expõe os dois novos campos
+
+---
+
 ## Dívidas Técnicas Documentadas
 
 | Item | Impacto | Resolver na |
 | ---- | ------- | ----------- |
-| ~~`channel.sentToday` nunca é zerado~~ | ~~Rate limiting do Phase 5 bloqueará envios após o 1º dia~~ | ✅ Resolvido — cron `daily-reset-sent-today` (BullMQ, `0 0 * * *` UTC) em `scheduler.worker.ts` |
+| ~~`channel.sentToday` nunca é zerado~~ | ~~Rate limiting bloqueará envios após o 1º dia~~ | ✅ Resolvido — cron `daily-reset-sent-today` em `scheduler.worker.ts` |
 | ~~`notificationQueue` com `attempts: 1`~~ | ~~Retry ciclos precisam de `attempts: 4` + backoff~~ | ✅ Resolvido — pré-Fase 4 |
-| `notification_attempt` sem canal disponível | Falha por "sem canal" não gera attempt (FK obrigatório) — rastreamento incompleto | Fase 4/5 — avaliar tornar `channelId` nullable ou criar tabela de eventos |
-| `POST /v1/notifications/send` usa JWT | API externa deveria usar `X-Api-Key` por organização | Fase 5 — implementar middleware de API Key e migrar autenticação desse endpoint |
-| SSE `/qrcode` com sessão ausente | Se `startSession()` lançar erro antes de adicionar ao Map, o stream SSE abre mas nunca recebe QR. Workaround: chamar `POST /channels/:id/reconnect` antes de abrir o stream. | Fase 5/6 — melhorar resiliência do startup de sessão |
-| `buildEntityOrgFilter` com cast `as object` | Em `channels.ts` e `notifications.ts`, o retorno de `buildEntityOrgFilter` é passado como `...(filter as object)` — escapa a checagem de tipo do Prisma. Se a assinatura do filtro mudar silenciosamente, queries podem omitir o escopo de organização sem erro de compilação. | Fase 6 — tipar corretamente o retorno de `buildEntityOrgFilter` com o tipo `Prisma.XxxWhereInput` adequado |
-| `daily-reset-sent-today` usa cron UTC | O job reseta `sent_today` à meia-noite UTC (cron `0 0 * * *`). Para operações no fuso Brasil (UTC-3 a UTC-5), o reset ocorre entre 20h-21h do dia anterior. Impacto: rate limiting diário pode permitir até ≈8h extras de envio antes do reset | Fase 5 — permitir configuração do fuso via `DAILY_RESET_TZ` env var |
-| `POST /v1/notifications/send` usa JWT | API externa deveria usar `X-Api-Key` por organização | Fase 5 — implementar middleware de API Key, tabela `api_key` no model `Organization`, manter JWT como fallback |
-| `scheduledAt` sem processamento | `notification.scheduledAt` existe no schema mas não há rota nem worker que crie delayed jobs a partir dele | Fase 5 — `POST /v1/notifications/schedule` com `notificationQueue.add(..., { delay })` |
-| Janela `sentToday` vs `sentLastHour` pós-reset | Após o reset (sentToday=0), `sentLastHour` ainda conta entregas da última hora — canal pode enviar além do `hourlyLimit` por ≈60 min logo após o reset | Monitorar em Fase 5; mitigação: rate limit horário é a proteção real |
-| **Broadcast WhatsApp bloqueado** (decisão de design) | `POST /notifications/broadcast` retorna 400 para WHATSAPP — model `User` não tem campo `phone`. Decisão consciente: broadcast WA requer lista externa de destinatários, não usuários do sistema. | Fase 6+ — adicionar campo `phone` em User se broadcast WA for necessário |
-| **API Key em texto puro** | `organization.apiKey` armazenado sem hash. Se o banco vazar, todas as chaves ficam expostas. | Antes de produção — migrar para `SHA-256(apiKey)` no campo e verificar por hash; retornar a chave plain text apenas na geração |
-| **Cancelamento de notificação agendada** | Não há `DELETE /notifications/:id`. A chave `bullJobId` agora está disponível no model — o endpoint pode chamar `notificationQueue.remove(bullJobId)` + setar `status: CANCELADO` | Fase 6 — `POST /v1/notifications/:id/cancel` (só para AGENDADO) |
-| **Warmup promotion sem evento SSE** | O cron `daily-warmup-promote` promove WARMING→ACTIVE mas não emite evento SSE. O dashboard verá a mudança apenas no próximo polling. | Workaround no dashboard da Fase 6: polling de 60s em `GET /channels?type=WHATSAPP` |
+| ~~`POST /v1/notifications/send` usa JWT~~ | ~~API externa deveria usar `X-Api-Key`~~ | ✅ Resolvido — `authenticate-api-key.ts` + campo `apiKey` em `Organization` |
+| ~~`scheduledAt` sem processamento~~ | ~~Sem rota nem worker para delayed jobs~~ | ✅ Resolvido — `POST /v1/notifications/schedule` em `notifications.ts` |
+| ~~`buildEntityOrgFilter` com cast `as object`~~ | ~~Escapa checagem de tipo do Prisma~~ | ✅ Resolvido — `OrgScopeFilter` tipado como `{ organizationId?: string \| { in: string[] } }` em `scope-guard.ts` |
+| ~~`daily-reset-sent-today` usa cron UTC~~ | ~~Reset às 20h-21h no Brasil~~ | ✅ Resolvido — env var `DAILY_RESET_TZ` suportada em `env.ts` e `scheduler.worker.ts` |
+| ~~**API Key em texto puro**~~ | ~~Banco vazado expõe todas as chaves~~ | ✅ Resolvido — `SHA-256(rawKey)` armazenado; chave plain retornada apenas na geração |
+| `notification_attempt` sem canal disponível | Falha por "sem canal" não gera attempt (FK obrigatório) — rastreamento incompleto | Avaliar tornar `channelId` nullable em migração futura |
+| SSE `/qrcode` com sessão ausente | Se `startSession()` falhar antes de adicionar ao Map, o stream abre mas nunca recebe QR. Workaround: chamar `POST /channels/:id/reconnect` antes de abrir o stream. | Melhoria futura — resiliência do startup de sessão |
+| Janela `sentToday` vs `sentLastHour` pós-reset | Após reset, `sentLastHour` ainda conta envios da última hora — canal pode enviar além do `hourlyLimit` por ≈60 min | Mitigação aceitável: rate limit horário é a proteção real |
+| **Broadcast WhatsApp bloqueado** (decisão de design) | `POST /notifications/broadcast` ignora WHATSAPP — model `User` não tem campo `phone`. Broadcast WA requer lista externa de destinatários. | Melhoria futura — adicionar `phone` em `User` se broadcast WA for necessário |
+| **Cancelamento de notificação agendada** | Sem `DELETE /notifications/:id`. `bullJobId` disponível no model — pode chamar `notificationQueue.remove(bullJobId)` + `status: CANCELADO` | Melhoria futura — `POST /v1/notifications/:id/cancel` (só para `AGENDADO`) |
+| **Warmup promotion sem evento SSE** | Cron `daily-warmup-promote` promove WARMING→ACTIVE mas não emite evento SSE. Dashboard vê a mudança apenas no próximo polling. | Workaround: polling de 60s em `GET /channels?type=WHATSAPP` |

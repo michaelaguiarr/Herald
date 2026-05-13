@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "a8f3d2c1-b4e5-4f6a-8901-23456789abcd",
     "name": "Herald API",
-    "description": "Coleção completa da Herald API — Serviço de notificações multi-canal para paróquias e comunidades.\n\n**Cobertura:** Fases 1, 2 e 3 (Auth, Orgs, Users, Channels Email+WhatsApp, Notifications)\n\n## Como usar\n1. Execute **Auth › Login** para obter o token (salvo automaticamente em `{{token}}`)\n2. Crie uma paróquia em **Organizations › Criar Paróquia** — `{{orgId}}` é salvo automaticamente\n3. Crie uma comunidade em **Organizations › Criar Comunidade** — `{{comunidadeId}}` é salvo\n4. Siga o fluxo: Users → Channels → Notifications\n\n## Fluxo WhatsApp (Fase 3)\n1. Execute **Channels › Criar Canal WhatsApp** — `{{waChannelId}}` é salvo\n2. Abra o **mini-dashboard** (`cd dashboard && npm run dev` → `http://localhost:5173`) para ver o QR Code\n3. Escaneie com o WhatsApp — status muda para `ACTIVE`\n4. Envie uma notificação com **Notifications › Enviar Notificação (WhatsApp)**\n\n## Hierarquia de perfis\n```\nOWNER → cria SUPER_ADMIN\nSUPER_ADMIN → cria ADMIN (própria paróquia)\nADMIN → cria OPERATOR (própria comunidade)\n```\n\n## Variáveis\n| Variável | Descrição |\n|---|---|\n| `baseUrl` | URL base da API |\n| `token` | JWT salvo automaticamente no login |\n| `orgId` | ID da paróquia (salvo ao criar) |\n| `comunidadeId` | ID da comunidade (salvo ao criar) |\n| `userId` | ID do último usuário criado |\n| `channelId` | ID do último canal criado |\n| `waChannelId` | ID do último canal WhatsApp criado |\n| `notificationId` | ID da última notificação enviada |",
+    "description": "Coleção completa da Herald API — Serviço de notificações multi-canal para paróquias e comunidades.\n\n**Cobertura:** Fases 1–6 completas (Auth, Orgs, Users, Channels Email+WhatsApp+Telegram, Notifications, Dashboard, Audit Logs)\n\n## Como usar\n1. Execute **Auth › Login** — `{{token}}` é salvo automaticamente\n2. Crie uma paróquia em **Organizations › Criar Paróquia** — `{{orgId}}` é salvo\n3. Siga o fluxo: Users → Channels → Notifications\n\n## Fluxo WhatsApp\n1. **Channels › Criar Canal WhatsApp** — `{{waChannelId}}` é salvo\n2. Abra o dashboard (`http://localhost:80` produção ou `http://localhost:5173` dev)\n3. Escaneie o QR Code — status muda para `WARMING` → `ACTIVE` em 7 dias\n4. Envie com **Notifications › Enviar Notificação (WhatsApp)**\n\n## Fluxo API Key (integração externa)\n1. **Organizations › Gerar API Key** — `{{apiKey}}` é salvo\n2. Use `X-Api-Key: {{apiKey}}` nos endpoints de notificação em vez de JWT\n\n## Hierarquia de perfis\n```\nOWNER → cria SUPER_ADMIN\nSUPER_ADMIN → cria ADMIN (própria paróquia)\nADMIN → cria OPERATOR (própria comunidade)\n```\n\n## Variáveis\n| Variável | Descrição |\n|---|---|\n| `baseUrl` | URL base da API |\n| `token` | JWT salvo automaticamente no login |\n| `orgId` | ID da paróquia (salvo ao criar) |\n| `comunidadeId` | ID da comunidade (salvo ao criar) |\n| `userId` | ID do último usuário criado |\n| `channelId` | ID do último canal criado |\n| `waChannelId` | ID do último canal WhatsApp criado |\n| `notificationId` | ID da última notificação enviada |\n| `apiKey` | API Key (salva ao gerar — guarde-a!) |",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -53,6 +53,12 @@
       "value": "",
       "type": "string",
       "description": "ID do último canal WhatsApp criado. Preenchido automaticamente por 'Criar Canal WhatsApp'."
+    },
+    {
+      "key": "apiKey",
+      "value": "",
+      "type": "string",
+      "description": "API Key gerada em Organizations › Gerar API Key. Guardada apenas uma vez — a chave armazenada no banco é o hash SHA-256."
     }
   ],
   "item": [
@@ -306,6 +312,54 @@
               "path": ["v1", "organizations", "{{orgId}}"]
             },
             "description": "Desativa uma organização (soft delete — `active: false`). A organização deixa de aparecer em listagens mas os dados são preservados.\n\n**Perfil necessário:** OWNER"
+          },
+          "response": []
+        },
+        {
+          "name": "Gerar API Key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('apiKey', body.apiKey);",
+                  "    console.log('✅ API Key gerada (salve agora!):', body.apiKey);",
+                  "    console.log('⚠️ Esta chave não será exibida novamente.');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/organizations/{{orgId}}/api-key",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "organizations", "{{orgId}}", "api-key"]
+            },
+            "description": "Gera (ou regenera) uma API Key para a organização. A chave é retornada **apenas uma vez** — guarde-a imediatamente. Internamente é armazenada como SHA-256, nunca em texto puro.\n\nUse o header `X-Api-Key: <chave>` nos endpoints `POST /v1/notifications/send`, `/schedule` e `/broadcast` para autenticar chamadas da API externa sem JWT.\n\n**Perfil necessário:** OWNER"
+          },
+          "response": []
+        },
+        {
+          "name": "Revogar API Key",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/organizations/{{orgId}}/api-key",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "organizations", "{{orgId}}", "api-key"]
+            },
+            "description": "Revoga a API Key ativa da organização. Chamadas futuras com a chave antiga retornarão 401.\n\n**Perfil necessário:** OWNER"
           },
           "response": []
         }
@@ -727,6 +781,22 @@
           "response": []
         },
         {
+          "name": "Desconectar Sessão WhatsApp",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/channels/{{waChannelId}}/disconnect",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "channels", "{{waChannelId}}", "disconnect"]
+            },
+            "description": "Encerra a sessão Baileys de um canal WhatsApp **sem** iniciar reconexão automática. Remove os arquivos de auth do servidor — ao reconectar (via `POST /reconnect`) será gerado um novo QR Code.\n\n**Casos de uso:**\n- Troca de número de telefone no canal\n- Encerramento definitivo de uma sessão\n- Manutenção planejada\n\n**Diferença vs `POST /reconnect`:**\n\n| | `/disconnect` | `/reconnect` |\n|---|---|---|\n| Para a sessão | ✅ | ✅ |\n| Remove auth | ✅ | ✅ |\n| Inicia nova sessão | ❌ | ✅ |\n| Próxima ação | `POST /reconnect` manual | Escanear QR Code |\n\n**Response:**\n```json\n{ \"status\": \"DISCONNECTED\" }\n```\n\n**Retorna 400** se o canal não for do tipo `WHATSAPP`.\n\n**Perfil mínimo:** ADMIN"
+          },
+          "response": []
+        },
+        {
           "name": "[Dev] Testar Envio WhatsApp",
           "request": {
             "method": "POST",
@@ -745,6 +815,43 @@
               "path": ["v1", "channels", "{{waChannelId}}", "test-message"]
             },
             "description": "⚠️ **Apenas para desenvolvimento** — diagnóstico completo de um envio WhatsApp: verifica JID, detecta LID, envia mensagem de teste e retorna o status retornado pelo Baileys. Retorna 403 em produção.\n\n**Perfil necessário:** OWNER\n\n**Body:**\n```json\n{\n  \"phone\": \"5595991590235\",      // sem + ou espaços\n  \"message\": \"Mensagem de teste\"  // omitir para só verificar JID sem enviar\n}\n```\n\n**Response — número não está no WhatsApp:**\n```json\n{\n  \"channelStatus\": \"ACTIVE\",\n  \"jid\": \"5595991590235@s.whatsapp.net\",\n  \"exists\": false,\n  \"messageSent\": false\n}\n```\n\n**Response — envio bem-sucedido:**\n```json\n{\n  \"channelStatus\": \"ACTIVE\",\n  \"jid\": \"5595991590235@s.whatsapp.net\",\n  \"exists\": true,\n  \"messageSent\": true,\n  \"messageStatus\": 1,\n  \"messageStatusLabel\": \"SERVER_ACK (✓ servidor recebeu)\"\n}\n```\n\n**Valores de `messageStatus`:**\n- `0` → ERROR — WA server rejeitou\n- `1` → PENDING — aceito pelo Baileys\n- `2` → SERVER_ACK — servidor WA confirmou (✓)\n- `3` → DELIVERY_ACK — entregue ao dispositivo (✓✓)"
+          },
+          "response": []
+        },
+        {
+          "name": "Criar Canal Telegram",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('channelId', body.id);",
+                  "    console.log('✅ Canal Telegram criado:', body.id, '|', body.label);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"label\": \"Bot Telegram Alertas\",\n  \"organizationId\": \"{{orgId}}\",\n  \"channelType\": \"TELEGRAM\",\n  \"dailyLimit\": 1000,\n  \"credentials\": {\n    \"botToken\": \"1234567890:ABC-seu-token-aqui\",\n    \"chatId\": \"-1001234567890\"\n  }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/channels",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "channels"]
+            },
+            "description": "Cria um canal Telegram usando um bot. O `botToken` é obtido via @BotFather no Telegram. O `chatId` pode ser o ID de um grupo/canal (negativo) ou de um usuário individual.\n\n**Obter o chatId de um grupo:**\n1. Adicione o bot ao grupo\n2. Envie uma mensagem no grupo\n3. Acesse `https://api.telegram.org/bot<TOKEN>/getUpdates`\n4. O `chatId` estará em `result[0].message.chat.id`\n\n**Perfil mínimo:** ADMIN"
           },
           "response": []
         },
@@ -768,7 +875,7 @@
     },
     {
       "name": "Notifications",
-      "description": "Envio, consulta e reenvio de notificações. Os endpoints de envio (`/send`) são chamados pela API externa que fornece o conteúdo pronto. A Fase 5 substituirá o JWT por X-Api-Key por organização.",
+      "description": "Envio, consulta e reenvio de notificações. Endpoints de envio aceitam JWT Bearer **ou** `X-Api-Key` (para integração de API externa). O Herald recebe conteúdo 100% pronto — não compõe mensagens.",
       "item": [
         {
           "name": "Enviar Notificação (Email)",
@@ -798,7 +905,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"channelType\": \"EMAIL\",\n  \"recipientName\": \"João Silva\",\n  \"recipientEmail\": \"joao.silva@feligres.com\",\n  \"message\": \"<p>Prezado João,</p><p>Informamos que sua contribuição de dizimista referente ao mês de maio foi recebida com sucesso.</p><p>Obrigado pelo seu apoio!</p>\"\n}",
+              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"channelType\": \"EMAIL\",\n  \"recipientName\": \"João Silva\",\n  \"recipientEmail\": \"joao.silva@feligres.com\",\n  \"message\": \"<p>Prezado João,</p><p>Informamos que sua contribuição de dizimista referente ao mês de maio foi recebida com sucesso.</p><p>Obrigado pelo seu apoio!</p>\",\n  \"imageUrl\": \"https://picsum.photos/seed/herald/600/200\",\n  \"imageCaption\": \"Comunidade São Pedro — obrigado pela sua contribuição!\"\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
@@ -806,7 +913,7 @@
               "host": ["{{baseUrl}}"],
               "path": ["v1", "notifications", "send"]
             },
-            "description": "Enfileira uma notificação para entrega imediata via Email. Retorna 202 com a notificação no status `PENDENTE`. O worker BullMQ processa o job de forma assíncrona e atualiza o status para `ENVIADO` ou `FALHOU`.\n\n**Campos obrigatórios por canal:**\n- `EMAIL` → `recipientEmail`\n- `WHATSAPP` → `recipientPhone`\n- `TELEGRAM` → `recipientTelegramId`\n\n**Perfil mínimo:** ADMIN\n\n⚠️ Para o Email ser de fato entregue, configure as credenciais SMTP no canal."
+            "description": "Enfileira uma notificação para entrega imediata via Email. Retorna 202 com a notificação no status `PENDENTE`.\n\n**Campos obrigatórios por canal:**\n- `EMAIL` → `recipientEmail`\n- `WHATSAPP` → `recipientPhone`\n- `TELEGRAM` → `recipientTelegramId`\n\n**Campos opcionais de imagem:**\n- `imageUrl` — URL pública da imagem (deve ser acessível sem autenticação)\n- `imageCaption` — legenda exibida abaixo da imagem\n- `message` pode ser omitido quando `imageUrl` está presente\n\n**Comportamento por canal com imagem:**\n- `EMAIL`: `<img>` inline no HTML + legenda\n- `WHATSAPP`: download do servidor + Baileys `{ image: buffer, caption }`\n- `TELEGRAM`: `sendPhoto(chatId, imageUrl, { caption })`\n\n**Perfil mínimo:** ADMIN\n\n⚠️ Para Email ser entregue, configure as credenciais SMTP no canal."
           },
           "response": []
         },
@@ -820,7 +927,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"channelType\": \"WHATSAPP\",\n  \"recipientName\": \"Maria Oliveira\",\n  \"recipientPhone\": \"+5595991234567\",\n  \"message\": \"Olá Maria! Sua contribuição de dizimista referente ao mês de maio foi recebida. Obrigada pelo seu apoio!\"\n}",
+              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"channelType\": \"WHATSAPP\",\n  \"recipientName\": \"Maria Oliveira\",\n  \"recipientPhone\": \"+5595991234567\",\n  \"message\": \"Olá Maria! Sua contribuição foi recebida. Obrigada pelo apoio!\",\n  \"imageUrl\": \"https://picsum.photos/seed/paroquia/400/300\",\n  \"imageCaption\": \"Comunidade São Pedro — Missa de Corpus Christi, 19/06 às 19h\"\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
@@ -828,7 +935,126 @@
               "host": ["{{baseUrl}}"],
               "path": ["v1", "notifications", "send"]
             },
-            "description": "Enfileira uma notificação para entrega via WhatsApp. O job é criado e processado pelo worker, que seleciona o melhor número disponível do pool respeitando `dailyLimit` e `hourlyLimit`.\n\n⚠️ **Fase 3** — Requer um canal WhatsApp com sessão Baileys ativa (status `ACTIVE`). Sem canal configurado, a notificação vai para `FALHOU`."
+            "description": "Enfileira uma notificação para entrega via WhatsApp. O job é criado e processado pelo worker, que seleciona o melhor número disponível do pool respeitando `dailyLimit` e `hourlyLimit`.\n\n⚠️ Requer um canal WhatsApp com sessão Baileys ativa (status `ACTIVE`). Sem canal configurado, a notificação vai para `FALHOU`."
+          },
+          "response": []
+        },
+        {
+          "name": "Enviar Notificação (Telegram)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"channelType\": \"TELEGRAM\",\n  \"recipientName\": \"Canal Avisos\",\n  \"recipientTelegramId\": \"-1001234567890\",\n  \"message\": \"📢 Aviso importante da paróquia: missa das 10h cancelada por reforma.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/notifications/send",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "notifications", "send"]
+            },
+            "description": "Enfileira uma notificação para entrega via Telegram Bot. O `recipientTelegramId` pode ser um chatId de grupo (negativo) ou de usuário individual.\n\n⚠️ Requer um canal Telegram ativo com `botToken` e `chatId` configurados."
+          },
+          "response": []
+        },
+        {
+          "name": "Enviar via API Key (X-Api-Key)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Api-Key", "value": "{{apiKey}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"channelType\": \"WHATSAPP\",\n  \"recipientName\": \"API Externa\",\n  \"recipientPhone\": \"+5595991234567\",\n  \"message\": \"Mensagem enviada via API Key (sem JWT)\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/notifications/send",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "notifications", "send"]
+            },
+            "description": "Demonstra a autenticação via `X-Api-Key` em vez de JWT Bearer token. Use isso na API externa que integra com o Herald.\n\n**Fluxo:**\n1. Gere a API Key em **Organizations › Gerar API Key** — `{{apiKey}}` é salvo automaticamente\n2. Use o header `X-Api-Key: {{apiKey}}` neste request\n\nA chave concede acesso ADMIN-level à organização dona da chave."
+          },
+          "response": []
+        },
+        {
+          "name": "Agendar Notificação",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('notificationId', body.id);",
+                  "    console.log('✅ Notificação agendada:', body.id, '| Status:', body.status, '| Para:', body.scheduledAt);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"channelType\": \"WHATSAPP\",\n  \"recipientName\": \"João Agendado\",\n  \"recipientPhone\": \"+5595991234567\",\n  \"message\": \"Lembrete: missa de sábado às 18h.\",\n  \"imageUrl\": \"https://picsum.photos/seed/missa/400/300\",\n  \"imageCaption\": \"Missa de Natal — 25/12 às 18h. Venha celebrar!\",\n  \"scheduledAt\": \"2026-12-25T18:00:00.000Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/notifications/schedule",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "notifications", "schedule"]
+            },
+            "description": "Agenda uma notificação para entrega futura. O status inicial é `AGENDADO`. Um job BullMQ delayed é criado e disparado no horário `scheduledAt`.\n\n**`scheduledAt`** deve ser uma data ISO 8601 no futuro.\n\n**Autenticação aceita:** JWT Bearer ou `X-Api-Key`\n\n**Perfil mínimo:** ADMIN"
+          },
+          "response": []
+        },
+        {
+          "name": "Broadcast para toda a Organização",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "    const body = pm.response.json();",
+                  "    console.log('✅ Broadcast concluído | enfileiradas:', body.enqueued, '| ignoradas:', body.skipped, '| total usuários:', body.total);",
+                  "} else {",
+                  "    console.error('❌ Broadcast falhou:', pm.response.json().message);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"channelType\": \"EMAIL\",\n  \"message\": \"📢 Comunicado geral da paróquia: retiro espiritual no próximo fim de semana. Inscreva-se na secretaria!\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/notifications/broadcast",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "notifications", "broadcast"]
+            },
+            "description": "Enfileira uma notificação para cada usuário ativo da organização e suas filhas que possuem o campo de contato preenchido para o canal.\n\n**Campos de contato por canal:**\n- `EMAIL` → `user.email` (sempre preenchido)\n- `TELEGRAM` → `user.telegramId` (opcional no cadastro)\n- `WHATSAPP` → ⚠️ **não suportado** — retorna 400 (`User` não possui campo `phone`)\n\n**Response:**\n```json\n{\n  \"enqueued\": 43,\n  \"skipped\": 2,\n  \"total\": 45\n}\n```\n- `enqueued` — notificações enfileiradas com sucesso\n- `skipped` — usuários ignorados (sem campo de contato para o canal)\n- `total` — total de usuários na organização e filhas\n\n**Autenticação:** JWT Bearer\n\n**Perfil mínimo:** ADMIN"
           },
           "response": []
         },
@@ -901,6 +1127,211 @@
               "path": ["v1", "notifications", "{{notificationId}}", "retry"]
             },
             "description": "Reenvia manualmente uma notificação que está nos status `FALHOU`, `FALHOU_DEFINITIVO` ou `ENVIADO`. O status é resetado para `PENDENTE`, `retryCycle` zerado e um novo job é enfileirado no BullMQ.\n\n**`ENVIADO` também é aceito** porque esse status indica apenas que o Baileys não lançou exceção no envio — não garante que o destinatário recebeu. O operador pode forçar reenvio quando confirmar que a mensagem não chegou.\n\nRetorna 400 para status `PENDENTE`, `AGENDADO` ou `CANCELADO`.\n\n**Perfis permitidos:** OWNER, SUPER_ADMIN, ADMIN, OPERATOR"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Dashboard",
+      "description": "Métricas e painel de falhas do Herald. Todos os endpoints filtram os dados pelo escopo do perfil autenticado.\n\n**Disponível no frontend React** em `http://localhost:80` (produção) ou `http://localhost:5173` (dev).\n\n**Perfil mínimo:** ADMIN (inclusive OPERATOR para leitura)",
+      "item": [
+        {
+          "name": "Resumo — Hoje",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/dashboard/summary?period=today",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "dashboard", "summary"],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "today",
+                  "description": "Métricas desde 00:00 de hoje (fuso do servidor)"
+                }
+              ]
+            },
+            "description": "Métricas do dia atual — desde 00:00 de hoje.\n\n**Response:**\n```json\n{\n  \"period\": \"today\",\n  \"totalNotifications\": 87,\n  \"deliveryRate\": 96.6,\n  \"byStatus\": [\n    { \"status\": \"ENVIADO\",            \"count\": 84 },\n    { \"status\": \"FALHOU_DEFINITIVO\",  \"count\": 2  },\n    { \"status\": \"PENDENTE\",           \"count\": 1  }\n  ],\n  \"byChannel\": [\n    { \"channelType\": \"WHATSAPP\", \"count\": 60 },\n    { \"channelType\": \"EMAIL\",    \"count\": 27 }\n  ],\n  \"channels\": [\n    { \"status\": \"ACTIVE\",       \"count\": 3 },\n    { \"status\": \"WARMING\",      \"count\": 1 },\n    { \"status\": \"DISCONNECTED\", \"count\": 0 }\n  ]\n}\n```\n\n`deliveryRate` = ENVIADO / (ENVIADO + FALHOU + FALHOU_DEFINITIVO) × 100. Retorna 0 se sem dados.\n\n**Perfil mínimo:** OPERATOR"
+          },
+          "response": []
+        },
+        {
+          "name": "Resumo — Últimos 7 dias",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/dashboard/summary?period=7d",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "dashboard", "summary"],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "7d",
+                  "description": "Métricas dos últimos 7 dias (padrão)"
+                }
+              ]
+            },
+            "description": "Métricas dos últimos 7 dias — período padrão do dashboard.\n\n**Response:** igual ao `period=today` com `\"period\": \"7d\"` e totais do intervalo.\n\n**Perfil mínimo:** OPERATOR"
+          },
+          "response": []
+        },
+        {
+          "name": "Resumo — Últimos 30 dias",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/dashboard/summary?period=30d",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "dashboard", "summary"],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "30d",
+                  "description": "Métricas dos últimos 30 dias"
+                }
+              ]
+            },
+            "description": "Métricas dos últimos 30 dias — visão de tendência mensal.\n\n**Response:** igual ao `period=today` com `\"period\": \"30d\"` e totais do intervalo.\n\n**Perfil mínimo:** OPERATOR"
+          },
+          "response": []
+        },
+        {
+          "name": "Fila de Falhas Definitivas",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/dashboard/failed?page=1&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "dashboard", "failed"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Número da página (começa em 1)"
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "Itens por página (máximo 100)"
+                },
+                {
+                  "key": "channelType",
+                  "value": "WHATSAPP",
+                  "description": "Filtrar por canal: EMAIL | WHATSAPP | TELEGRAM (opcional)",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Lista notificações com status `FALHOU_DEFINITIVO`, paginadas da mais recente, filtráveis por canal. Usado pelo painel de reenvio manual.\n\n**Filtros disponíveis:**\n- `page` / `limit` — paginação\n- `channelType` — filtra por `EMAIL`, `WHATSAPP` ou `TELEGRAM` (desabilitado por padrão)\n\n**Response:**\n```json\n{\n  \"data\": [\n    {\n      \"id\": \"uuid\",\n      \"organizationId\": \"uuid-org\",\n      \"recipientName\": \"João Silva\",\n      \"channelType\": \"WHATSAPP\",\n      \"recipientPhone\": \"+5595991234567\",\n      \"recipientEmail\": null,\n      \"message\": \"Lembrete de dizimista...\",\n      \"retryCycle\": 3,\n      \"createdAt\": \"2026-05-10T14:30:00.000Z\"\n    }\n  ],\n  \"total\": 12,\n  \"page\": 1,\n  \"pages\": 1\n}\n```\n\nApós identificar a notificação, use **Notifications › Reenviar Notificação** para reprocessá-la.\n\n**Perfil mínimo:** OPERATOR"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Audit Logs",
+      "description": "Trilha de auditoria de todas as ações relevantes do sistema. Filtrado automaticamente pelo escopo do perfil autenticado.\n\n**Perfil mínimo:** ADMIN (OPERATOR não tem acesso ao audit log)\n\n**Ações registradas:**\n```\nLOGIN\nNOTIFICATION_QUEUED\nNOTIFICATION_BROADCAST\nNOTIFICATION_SCHEDULED\nNOTIFICATION_MANUAL_RETRY\nNOTIFICATION_FALHOU_DEFINITIVO\nWHATSAPP_BANNED\nCHANNEL_CREATED\nCHANNEL_UPDATED\nCHANNEL_DELETED\nCHANNEL_RECONNECT\nCHANNEL_DISCONNECTED\nORGANIZATION_CREATED\nORGANIZATION_UPDATED\nORGANIZATION_DELETED\nORGANIZATION_API_KEY_GENERATED\nORGANIZATION_API_KEY_REVOKED\n```",
+      "item": [
+        {
+          "name": "Listar Audit Log",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/audit-logs?page=1&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "audit-logs"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Número da página (começa em 1)"
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Itens por página (máximo 100)"
+                },
+                {
+                  "key": "action",
+                  "value": "WHATSAPP_BANNED",
+                  "description": "Filtro por ação — busca case-insensitive parcial (ex: 'CHANNEL' retorna todos os eventos de canal)",
+                  "disabled": true
+                },
+                {
+                  "key": "targetType",
+                  "value": "notification",
+                  "description": "Filtro por tipo do alvo: notification | channel | organization | user (busca exata)",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Lista entradas do audit log com paginação e filtros opcionais. O escopo é aplicado automaticamente pelo perfil:\n- **OWNER:** todos os eventos da plataforma\n- **SUPER_ADMIN:** eventos da paróquia e suas comunidades\n- **ADMIN:** apenas da própria organização\n\n**Filtros:**\n- `action` — busca parcial case-insensitive (ex: `NOTIFICATION` retorna todos os tipos de notificação)\n- `targetType` — exato: `notification`, `channel`, `organization`, `user`\n\n**Response:**\n```json\n{\n  \"data\": [\n    {\n      \"id\": \"uuid\",\n      \"userId\": null,\n      \"organizationId\": \"uuid-org\",\n      \"action\": \"NOTIFICATION_FALHOU_DEFINITIVO\",\n      \"targetType\": \"notification\",\n      \"targetId\": \"uuid-notif\",\n      \"metadata\": { \"channelType\": \"WHATSAPP\", \"retryCycle\": 3 },\n      \"ipAddress\": null,\n      \"createdAt\": \"2026-05-10T14:30:00.000Z\"\n    },\n    {\n      \"id\": \"uuid\",\n      \"userId\": \"uuid-user\",\n      \"organizationId\": \"uuid-org\",\n      \"action\": \"LOGIN\",\n      \"targetType\": \"user\",\n      \"targetId\": \"uuid-user\",\n      \"metadata\": null,\n      \"ipAddress\": \"177.84.12.55\",\n      \"createdAt\": \"2026-05-10T13:00:00.000Z\"\n    }\n  ],\n  \"total\": 340,\n  \"page\": 1,\n  \"pages\": 7\n}\n```\n\n**`userId: null`** indica evento de sistema (worker BullMQ, cron job) — não houve ação humana.\n\n**Perfil mínimo:** ADMIN"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Opt-outs",
+      "description": "Gestão de números que optaram por não receber notificações.\n\nQuando um destinatário responde **PARAR**, **STOP**, **CANCELAR**, **SAIR**, **REMOVER** ou **DESCADASTRAR** para o número do Herald, o opt-out é registrado automaticamente e futuras notificações para esse número são bloqueadas com `FALHOU_DEFINITIVO` imediato (sem retry).\n\n**Perfil mínimo:** ADMIN",
+      "item": [
+        {
+          "name": "Listar Opt-outs",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/opt-outs?page=1&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "opt-outs"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Número da página (começa em 1)"
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Itens por página (máximo 100)"
+                }
+              ]
+            },
+            "description": "Lista números que optaram por não receber notificações na organização, ordenados do mais recente. O escopo é filtrado automaticamente pelo perfil.\n\n**Response:**\n```json\n{\n  \"data\": [\n    {\n      \"id\": \"uuid\",\n      \"phone\": \"559591590235\",\n      \"organizationId\": \"uuid-org\",\n      \"reason\": \"parar\",\n      \"createdAt\": \"2026-05-13T05:38:38.475Z\"\n    }\n  ],\n  \"total\": 1,\n  \"page\": 1,\n  \"pages\": 1\n}\n```\n\n**`reason`** contém o texto exato enviado pelo destinatário que gerou o opt-out.\n\n**Perfil mínimo:** ADMIN"
+          },
+          "response": []
+        },
+        {
+          "name": "Remover Opt-out (Reativar Número)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/opt-outs/559591590235",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "opt-outs", "559591590235"]
+            },
+            "description": "Remove o opt-out e reativa o número para receber notificações. O número passa a ser elegível para envios novamente na próxima notificação.\n\n**Parâmetro:** `phone` — dígitos do número (sem `+`, sem espaços). Exemplo: `559591590235`\n\n⚠️ Não use URL encoding no número — passe apenas os dígitos diretamente na URL.\n\n**Response:**\n```json\n{ \"message\": \"Número +559591590235 reativado com sucesso.\" }\n```\n\n**Retorna 404** se o número não tiver opt-out registrado na organização.\n\n**Perfil mínimo:** ADMIN"
           },
           "response": []
         }
