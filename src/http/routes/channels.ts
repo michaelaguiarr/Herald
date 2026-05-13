@@ -36,6 +36,7 @@ const channelShape = z.object({
   dailyLimit: z.number(),
   hourlyLimit: z.number(),
   sentToday: z.number(),
+  connectedAt: z.date().nullable(),
   lastUsedAt: z.date().nullable(),
   createdAt: z.date(),
 })
@@ -383,6 +384,60 @@ export async function channelsRoutes(fastify: FastifyInstance) {
   )
 
   f.post(
+    '/channels/:id/disconnect',
+    {
+      onRequest: [
+        authenticate,
+        requireRole(UserRole.OWNER, UserRole.SUPER_ADMIN, UserRole.ADMIN),
+      ],
+      schema: {
+        tags: ['WhatsApp'],
+        summary: 'Desconectar sessão WhatsApp (sem reconexão automática)',
+        description:
+          'Encerra a sessão Baileys, remove os arquivos de auth e atualiza o status ' +
+          'para `DISCONNECTED`. Não inicia nova sessão — use `POST /reconnect` para ' +
+          'gerar um novo QR Code. Útil para trocar de número ou encerrar intencionalmente.',
+        security: [{ bearerAuth: [] }],
+        params: z.object({ id: z.string().uuid() }),
+        response: { 200: z.object({ status: z.string() }) },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params
+      const actor = request.user
+
+      const channel = await prisma.channel.findUnique({ where: { id } })
+      if (!channel || channel.status === ChannelStatus.INACTIVE) {
+        throw new AppError(404, 'Canal não encontrado')
+      }
+      if (channel.type !== ChannelType.WHATSAPP) {
+        throw new AppError(400, 'Desconexão disponível apenas para canais WhatsApp')
+      }
+
+      await assertOrgAccess(actor, channel.organizationId)
+
+      // Stop session + clear auth files (no auto-reconnect, no SESSAO_DESCONECTADA alert)
+      await whatsappSessionManager.disconnectSession(id)
+
+      await prisma.channel.update({
+        where: { id },
+        data: { status: ChannelStatus.DISCONNECTED },
+      })
+
+      await writeAuditLog({
+        userId: actor.sub,
+        organizationId: actor.organizationId,
+        action: 'CHANNEL_DISCONNECTED',
+        targetId: id,
+        targetType: 'channel',
+        ipAddress: request.ip,
+      })
+
+      return reply.send({ status: 'DISCONNECTED' })
+    }
+  )
+
+  f.post(
     '/channels/:id/reconnect',
     {
       onRequest: [
@@ -411,10 +466,14 @@ export async function channelsRoutes(fastify: FastifyInstance) {
 
       await assertOrgAccess(actor, channel.organizationId)
 
-      // Update DB to WARMING so SSE consumers see the state immediately
+      // Set DISCONNECTED (not WARMING) so the channel is ineligible for dispatch
+      // while the new QR Code session is being established. The session manager
+      // will set WARMING/ACTIVE when Baileys actually fires connection.open.
+      // Setting WARMING here was premature — it allowed dispatch with _status=WARMING
+      // in memory (new BaileysClient constructor default), causing spurious failures.
       await prisma.channel.update({
         where: { id },
-        data: { status: ChannelStatus.WARMING },
+        data: { status: ChannelStatus.DISCONNECTED },
       })
 
       // clearAuth=true deletes the saved Baileys creds so a fresh QR is always
