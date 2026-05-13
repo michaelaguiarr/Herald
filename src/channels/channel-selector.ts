@@ -1,5 +1,6 @@
 import { Channel, ChannelStatus, ChannelType } from '@prisma/client'
 import { prisma } from '../lib/prisma'
+import { OptOutError } from './whatsapp/whatsapp-errors'
 
 /** Max messages/day for a WhatsApp channel still in the 7-day warm-up period. */
 const WARMUP_DAILY_LIMIT = 20
@@ -22,7 +23,17 @@ export async function selectChannels(
   channelType: ChannelType,
   opts?: { recipientPhone?: string | null }
 ): Promise<Channel[]> {
-  const candidates = await prisma.channel.findMany({
+  // WhatsApp: reject immediately if the recipient has opted out.
+  // OptOutError is terminal — the worker marks FALHOU_DEFINITIVO without retry.
+  if (channelType === ChannelType.WHATSAPP && opts?.recipientPhone) {
+    const phone = opts.recipientPhone.replace(/\D/g, '')
+    const optOut = await prisma.optOut.findUnique({
+      where: { phone_organizationId: { phone, organizationId } },
+    })
+    if (optOut) throw new OptOutError(phone)
+  }
+
+  const rawCandidates = await prisma.channel.findMany({
     where: {
       organizationId,
       type: channelType,
@@ -34,6 +45,15 @@ export async function selectChannels(
     },
     orderBy: { lastUsedAt: 'asc' }, // LRU rotation
   })
+
+  // WhatsApp channels require an authenticated Baileys session (connectedAt ≠ null).
+  // A channel with connectedAt=null was created but the QR was never scanned —
+  // dispatching to it would reach sendMessage with _status=WARMING (throws) OR
+  // trigger the onWhatsApp error fallthrough (raw JID → silent delivery failure).
+  // Email/Telegram have no warmup cycle: connectedAt is always null for them.
+  const candidates = channelType === ChannelType.WHATSAPP
+    ? rawCandidates.filter((ch) => ch.connectedAt !== null)
+    : rawCandidates
 
   if (candidates.length === 0) return []
 

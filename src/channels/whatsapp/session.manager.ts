@@ -5,6 +5,7 @@ import { ChannelStatus, ChannelType } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { enqueueAlert } from '../../alerts/alert.service'
 import { writeAuditLog } from '../../lib/audit'
+import { invalidateCachedJid } from '../../lib/whatsapp-jid.cache'
 import { BaileysClient, WaSessionStatus } from './baileys.client'
 
 const sessionsBasePath =
@@ -94,6 +95,20 @@ class WhatsAppSessionManager {
         console.log(`[wa:manager] Auth state removido para ${channelId} — novo QR Code será gerado`)
       }
 
+      // ── Pre-fetch connectedAt BEFORE registering the status-change listener ──
+      // Fetching inside the async handler creates a race window: Baileys fires
+      // 'ACTIVE' synchronously, setting _status=ACTIVE in memory. The worker can
+      // then selectChannels (DB still shows ACTIVE) and dispatch before the handler
+      // finishes the DB query + update. Pre-fetching eliminates that window.
+      // Pre-fetch channel metadata needed by listeners in the closure.
+      const initialState = await prisma.channel
+        .findUnique({ where: { id: channelId }, select: { connectedAt: true, organizationId: true } })
+        .catch(() => null)
+      // Mutable flag in closure — flipped synchronously on first ACTIVE event,
+      // before any awaits, so reconnects see true without a DB round-trip.
+      let firstConnectionRecorded = !!initialState?.connectedAt
+      const orgId = initialState?.organizationId ?? ''
+
       const client = new BaileysClient(channelId, sessionsBasePath)
       this.sessions.set(channelId, client)
 
@@ -105,18 +120,16 @@ class WhatsAppSessionManager {
 
       client.on('status-change', async (rawStatus: WaSessionStatus) => {
         // ── Warmup: first Baileys ACTIVE → record connectedAt, keep WARMING ──
+        // Uses the pre-fetched flag — no DB query in the hot path, no async gap.
         // The channel stays WARMING until the 7-day cron promotes it to ACTIVE.
-        // After promotion, reconnections go straight to ACTIVE.
         let effectiveStatus: WaSessionStatus = rawStatus
         let extraData: { connectedAt?: Date } = {}
 
         if (rawStatus === 'ACTIVE') {
-          const existing = await prisma.channel
-            .findUnique({ where: { id: channelId }, select: { connectedAt: true } })
-            .catch(() => null)
-
-          if (!existing?.connectedAt) {
-            // First ever connection — start warm-up period
+          if (!firstConnectionRecorded) {
+            // First ever connection — start warm-up period.
+            // Flip the flag SYNCHRONOUSLY before any await so reconnects skip this branch.
+            firstConnectionRecorded = true
             effectiveStatus = 'WARMING'
             extraData = { connectedAt: new Date() }
             console.log(`[wa:session:${channelId}] Primeira conexão → warm-up iniciado (7 dias)`)
@@ -132,7 +145,10 @@ class WhatsAppSessionManager {
             data: { status: statusToDb[effectiveStatus], ...extraData },
           })
           .catch((err) => {
-            console.error(`[wa:manager] Falha ao atualizar status ${channelId}:`, err)
+            // Log with full context — a missed status update can corrupt channel state
+            console.error(
+              `[wa:manager] Falha ao atualizar status ${channelId} → ${effectiveStatus}:`, err
+            )
             return null
           })
 
@@ -195,6 +211,65 @@ class WhatsAppSessionManager {
         }
       })
 
+      // ── Delivery receipt handler ─────────────────────────────────────────
+      // Updates deliveryStatus on the notification_attempt when WA delivers
+      // or the recipient reads our message. Rank-guarded: statuses only advance
+      // (SERVER_ACK → DELIVERY_ACK → READ), never regress.
+      const DELIVERY_RANK: Record<string, number> = {
+        SERVER_ACK: 1, DELIVERY_ACK: 2, READ: 3,
+      }
+
+      client.on('delivery-update', async ({ messageId, status }: { messageId: string; status: string }) => {
+        try {
+          const attempt = await prisma.notificationAttempt.findFirst({
+            where: { whatsappMessageId: messageId, success: true },
+            select: { id: true, deliveryStatus: true },
+          })
+          if (!attempt) return
+
+          const currentRank = DELIVERY_RANK[attempt.deliveryStatus ?? ''] ?? 0
+          const newRank = DELIVERY_RANK[status] ?? 0
+          if (newRank <= currentRank) return  // never downgrade
+
+          await prisma.notificationAttempt.update({
+            where: { id: attempt.id },
+            data: { deliveryStatus: status },
+          })
+          console.log(
+            `[wa:manager:${channelId}] receipt → msgId=${messageId} ` +
+            `${attempt.deliveryStatus ?? 'null'} → ${status}`
+          )
+        } catch (err) {
+          console.error(`[wa:manager] Falha ao atualizar deliveryStatus msgId=${messageId}:`, err)
+        }
+      })
+
+      // ── Opt-out handler ─────────────────────────────────────────────────
+      client.on('opt-out-request', async ({ phone, reason }: { phone: string; reason: string }) => {
+        if (!orgId) {
+          console.warn(`[opt-out] Canal ${channelId} sem organizationId — ignorando`)
+          return
+        }
+        try {
+          await prisma.optOut.upsert({
+            where: { phone_organizationId: { phone, organizationId: orgId } },
+            create: { phone, organizationId: orgId, reason },
+            update: {},  // idempotent: don't overwrite existing entry
+          })
+          await invalidateCachedJid(phone)
+          console.log(`[opt-out] +${phone} → registrado (org: ${orgId.slice(0, 8)})`)
+
+          // Send confirmation — non-critical, errors are swallowed inside sendDirectMessage
+          await client.sendDirectMessage(
+            `${phone}@s.whatsapp.net`,
+            'Você foi removido da lista de notificações. ' +
+              'Para se recadastrar, entre em contato com a administração.'
+          )
+        } catch (err) {
+          console.error(`[opt-out] Falha ao registrar opt-out +${phone}:`, err)
+        }
+      })
+
       await client.connect()
       return client
     } finally {
@@ -222,12 +297,50 @@ class WhatsAppSessionManager {
     }
   }
 
-  async sendMessage(channelId: string, phone: string, text: string): Promise<void> {
+  /**
+   * Disconnects a channel intentionally (operator-triggered).
+   * Differs from stopSession: also removes auth files so the next
+   * startSession always generates a fresh QR Code.
+   * Does NOT start a new session — caller owns that decision.
+   */
+  async disconnectSession(channelId: string): Promise<void> {
+    // Cancel any pending alert timer — this is intentional, no alarm needed
+    const timer = this.disconnectTimers.get(channelId)
+    if (timer) {
+      clearTimeout(timer)
+      this.disconnectTimers.delete(channelId)
+    }
+
+    const session = this.sessions.get(channelId)
+    if (session) {
+      await session.disconnect(false)  // sets _manualDisconnect=true, _shouldReconnect=false
+      this.sessions.delete(channelId)
+    }
+
+    // Clear auth files — forces a new QR Code on the next connection
+    const sessionDir = path.join(sessionsBasePath, channelId)
+    fs.rmSync(sessionDir, { recursive: true, force: true })
+    console.log(`[wa:manager] disconnectSession ${channelId} — auth removida`)
+
+    const emitter = this.channelEmitters.get(channelId)
+    if (emitter) {
+      emitter.removeAllListeners()
+      this.channelEmitters.delete(channelId)
+    }
+  }
+
+  // Returns the Baileys message ID (key.id) so the worker can link delivery ACKs.
+  async sendMessage(
+    channelId: string,
+    phone: string,
+    text: string,
+    opts?: { imageUrl?: string; caption?: string }
+  ): Promise<string> {
     const session = this.sessions.get(channelId)
     if (!session) {
       throw new Error(`Sessão WhatsApp ${channelId} não encontrada`)
     }
-    await session.sendMessage(phone, text)
+    return session.sendMessage(phone, text, opts)
   }
 
   getSession(channelId: string): BaileysClient | undefined {
