@@ -3,7 +3,7 @@ import { useAuthStore } from '@/store/auth.store'
 import { type AuthUser } from '@/types/api.types'
 
 export const api = axios.create({
-  baseURL: '/v1',
+  baseURL: (import.meta.env.VITE_API_URL ?? '') + '/herald/v1',
   headers: { 'Content-Type': 'application/json' },
   // Needed so the browser sends the httpOnly refresh-token cookie on every request
   withCredentials: true,
@@ -66,7 +66,7 @@ api.interceptors.response.use(
     // Already retried once — avoid infinite retry loop
     if (originalRequest._retry) {
       useAuthStore.getState().clearAuth()
-      window.location.replace('/login')
+      window.location.replace('/herald/login')
       return Promise.reject(error)
     }
 
@@ -99,7 +99,7 @@ api.interceptors.response.use(
     } catch (refreshError) {
       processQueue(refreshError, null)
       useAuthStore.getState().clearAuth()
-      window.location.replace('/login')
+      window.location.replace('/herald/login')
       return Promise.reject(refreshError)
     } finally {
       isRefreshing = false

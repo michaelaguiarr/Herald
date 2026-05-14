@@ -58,7 +58,7 @@ function BootLoader({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename="/herald">
       <BootLoader>
         <Routes>
           <Route element={<AuthRoute />}>

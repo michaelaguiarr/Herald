@@ -53,7 +53,7 @@ export function useQrCodeSse(channelId: string | null) {
 
     async function connect() {
       try {
-        const res = await fetch(`/v1/channels/${channelId}/qrcode`, {
+        const res = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/herald/v1/channels/${channelId}/qrcode`, {
           headers: { Authorization: `Bearer ${token}` },
           signal: controller.signal,
         })
