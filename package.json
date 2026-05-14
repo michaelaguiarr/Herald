@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsup src/server.ts --format esm --out-dir dist",
+    "build": "tsup src/server.ts --format cjs --out-dir dist",
     "start": "node dist/server.js",
     "postinstall": "patch-package",
     "db:migrate": "prisma migrate dev",
