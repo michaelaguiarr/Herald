@@ -5,6 +5,7 @@ COPY prisma ./prisma/
 COPY patches ./patches/
 
 FROM base AS deps
+RUN apk add --no-cache openssl
 RUN npm ci --omit=dev
 RUN npx prisma generate
 
@@ -18,7 +19,7 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
-RUN apk add --no-cache netcat-openbsd
+RUN apk add --no-cache openssl netcat-openbsd
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/prisma ./prisma
