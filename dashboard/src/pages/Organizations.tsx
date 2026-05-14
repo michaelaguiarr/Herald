@@ -26,8 +26,9 @@ import {
   listOrganizations, createOrganization, updateOrganization,
   deactivateOrganization, generateApiKey, revokeApiKey,
 } from '@/services/organizations.service'
-import { Organization } from '@/types/api.types'
+import { Organization, UserRole } from '@/types/api.types'
 import { getApiErrorMessage } from '@/services/api'
+import { useAuthStore } from '@/store/auth.store'
 import { cn } from '@/lib/utils'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -48,6 +49,28 @@ function buildTree(orgs: Organization[]): OrgTree[] {
       .filter((f) => f.parentId === root.id)
       .sort((a, b) => a.name.localeCompare(b.name)),
   }))
+}
+
+// ─── Permission helper ────────────────────────────────────────────────────────
+
+interface OrgPermissions {
+  rename: boolean
+  deactivate: boolean
+  apiKey: boolean
+}
+
+function canManageOrg(
+  role: UserRole | undefined,
+  org: Organization,
+  userOrgId: string,
+): OrgPermissions {
+  if (role === 'OWNER') return { rename: true, deactivate: true, apiKey: true }
+  if (role === 'SUPER_ADMIN') {
+    const inScope = org.id === userOrgId || org.parentId === userOrgId
+    if (!inScope) return { rename: false, deactivate: false, apiKey: false }
+    return { rename: true, deactivate: org.type === 'FILIAL', apiKey: true }
+  }
+  return { rename: false, deactivate: false, apiKey: false }
 }
 
 // ─── API Key modal (shown ONCE after generation) ──────────────────────────────
@@ -251,10 +274,57 @@ function CreateOrgDialog({ open, onClose, onCreated, rootOrgs }: {
   )
 }
 
+// ─── Create filial dialog (SUPER_ADMIN) ──────────────────────────────────────
+
+function CreateFilialDialog({ open, onClose, onCreated, parentId }: {
+  open: boolean; onClose: () => void; onCreated: () => void; parentId: string
+}) {
+  const form = useForm<CreateOrgForm>({
+    resolver: zodResolver(createOrgSchema) as never,
+    defaultValues: { name: '' },
+  })
+
+  function handleClose() { form.reset(); onClose() }
+
+  async function onSubmit(values: CreateOrgForm) {
+    try {
+      await createOrganization({ name: values.name, type: 'FILIAL', parentId })
+      toast.success('Filial criada com sucesso.')
+      handleClose(); onCreated()
+    } catch (err) {
+      toast.error(getApiErrorMessage(err))
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Nova filial</DialogTitle>
+        </DialogHeader>
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <FormField control={form.control} name="name" render={({ field }) => (
+              <FormItem><FormLabel>Nome</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
+            )} />
+            <DialogFooter className="gap-2">
+              <Button type="button" variant="outline" onClick={handleClose}>Cancelar</Button>
+              <Button type="submit" disabled={form.formState.isSubmitting}>
+                {form.formState.isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}Criar
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // ─── Deactivate confirm ───────────────────────────────────────────────────────
 
-function DeactivateOrgDialog({ org, open, onClose, onDeactivated }: {
+function DeactivateOrgDialog({ org, open, onClose, onDeactivated, isSuperAdmin = false }: {
   org: Organization | null; open: boolean; onClose: () => void; onDeactivated: () => void
+  isSuperAdmin?: boolean
 }) {
   const [loading, setLoading] = useState(false)
   async function confirm() {
@@ -274,8 +344,10 @@ function DeactivateOrgDialog({ org, open, onClose, onDeactivated }: {
         <DialogHeader>
           <DialogTitle>Desativar {org?.type === 'FILIAL' ? 'filial' : 'organização'}</DialogTitle>
           <DialogDescription>
-            Deseja desativar <strong>{org?.name}</strong>?
-            {org?.type === 'ORGANIZACAO' && ' Todas as filiais vinculadas também serão afetadas.'}
+            {isSuperAdmin
+              ? 'Tem certeza que deseja desativar esta filial?'
+              : <>Deseja desativar <strong>{org?.name}</strong>?{org?.type === 'ORGANIZACAO' && ' Todas as filiais vinculadas também serão afetadas.'}</>
+            }
           </DialogDescription>
         </DialogHeader>
         <DialogFooter className="gap-2">
@@ -330,16 +402,20 @@ function RevokeApiKeyDialog({ org, open, onClose }: {
 // ─── Org card ─────────────────────────────────────────────────────────────────
 
 function OrgCard({
-  org, isFilial = false,
+  org, isFilial = false, role, userOrgId,
   onRename, onDeactivate, onGenerateKey, onRevokeKey,
 }: {
   org: Organization
   isFilial?: boolean
+  role: UserRole | undefined
+  userOrgId: string
   onRename: (o: Organization) => void
   onDeactivate: (o: Organization) => void
   onGenerateKey: (o: Organization) => void
   onRevokeKey: (o: Organization) => void
 }) {
+  const perms = canManageOrg(role, org, userOrgId)
+
   return (
     <div className={cn(
       'rounded-md border p-4 space-y-3',
@@ -361,18 +437,26 @@ function OrgCard({
 
         {/* Actions */}
         <div className="flex items-center gap-1 shrink-0">
-          <Button variant="ghost" size="icon" className="h-7 w-7" title="Renomear" onClick={() => onRename(org)}>
-            <Pencil className="h-3.5 w-3.5" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-7 w-7" title="Gerar / Regenerar API Key" onClick={() => onGenerateKey(org)}>
-            <Key className="h-3.5 w-3.5" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-orange-600" title="Revogar API Key" onClick={() => onRevokeKey(org)}>
-            <ShieldOff className="h-3.5 w-3.5" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" title="Desativar" onClick={() => onDeactivate(org)}>
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+          {perms.rename && (
+            <Button variant="ghost" size="icon" className="h-7 w-7" title="Renomear" onClick={() => onRename(org)}>
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {perms.apiKey && (
+            <Button variant="ghost" size="icon" className="h-7 w-7" title="Gerar / Regenerar API Key" onClick={() => onGenerateKey(org)}>
+              <Key className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {perms.apiKey && (
+            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-orange-600" title="Revogar API Key" onClick={() => onRevokeKey(org)}>
+              <ShieldOff className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {perms.deactivate && (
+            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" title="Desativar" onClick={() => onDeactivate(org)}>
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
         </div>
       </div>
     </div>
@@ -382,6 +466,9 @@ function OrgCard({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function OrganizationsPage() {
+  const user = useAuthStore((s) => s.user)
+  const isSuperAdmin = user?.role === 'SUPER_ADMIN'
+
   const [tree, setTree] = useState<OrgTree[]>([])
   const [allOrgs, setAllOrgs] = useState<Organization[]>([])
   const [loading, setLoading] = useState(true)
@@ -450,7 +537,7 @@ export default function OrganizationsPage() {
             <RefreshCw className="h-3.5 w-3.5" />
           </Button>
           <Button size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus className="h-4 w-4" />Nova organização
+            <Plus className="h-4 w-4" />{isSuperAdmin ? 'Nova Filial' : 'Nova organização'}
           </Button>
         </div>
       </div>
@@ -474,6 +561,8 @@ export default function OrganizationsPage() {
               {/* Root org */}
               <OrgCard
                 org={org}
+                role={user?.role}
+                userOrgId={user?.organizationId ?? ''}
                 onRename={setRenameTarget}
                 onDeactivate={setDeactivateTarget}
                 onGenerateKey={handleGenerateKey}
@@ -488,6 +577,8 @@ export default function OrganizationsPage() {
                       key={filial.id}
                       org={filial}
                       isFilial
+                      role={user?.role}
+                      userOrgId={user?.organizationId ?? ''}
                       onRename={setRenameTarget}
                       onDeactivate={setDeactivateTarget}
                       onGenerateKey={handleGenerateKey}
@@ -526,12 +617,21 @@ export default function OrganizationsPage() {
         />
       )}
 
-      <CreateOrgDialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        onCreated={load}
-        rootOrgs={rootOrgs}
-      />
+      {isSuperAdmin ? (
+        <CreateFilialDialog
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          onCreated={load}
+          parentId={user?.organizationId ?? ''}
+        />
+      ) : (
+        <CreateOrgDialog
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          onCreated={load}
+          rootOrgs={rootOrgs}
+        />
+      )}
       <RenameDialog
         org={renameTarget}
         open={renameTarget !== null}
@@ -543,6 +643,7 @@ export default function OrganizationsPage() {
         open={deactivateTarget !== null}
         onClose={() => setDeactivateTarget(null)}
         onDeactivated={load}
+        isSuperAdmin={isSuperAdmin}
       />
       <RevokeApiKeyDialog
         org={revokeTarget}
