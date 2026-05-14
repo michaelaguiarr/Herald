@@ -2,6 +2,7 @@ FROM node:20-alpine AS base
 WORKDIR /app
 COPY package*.json ./
 COPY prisma ./prisma/
+COPY patches ./patches/
 
 FROM base AS deps
 RUN npm ci --omit=dev
