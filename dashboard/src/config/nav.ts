@@ -27,7 +27,7 @@ export const NAV_ITEMS: NavItem[] = [
   { path: '/whatsapp',       label: 'Sessões WhatsApp',    icon: Smartphone,      roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
   { path: '/channels',       label: 'Canais',              icon: Radio,           roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
   { path: '/users',          label: 'Usuários',            icon: Users,           roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-  { path: '/organizations',  label: 'Organizações',        icon: Building2,       roles: ['OWNER'] },
+  { path: '/organizations',  label: 'Organizações',        icon: Building2,       roles: ['OWNER', 'SUPER_ADMIN'] },
   { path: '/audit',          label: 'Audit Log',           icon: ClipboardList,   roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
   { path: '/opt-outs',      label: 'Opt-outs',            icon: Ban,             roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
 ]
