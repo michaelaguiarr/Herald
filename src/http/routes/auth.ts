@@ -290,7 +290,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         data: { resetToken: token, resetTokenExp: exp },
       })
 
-      await sendPasswordResetEmail(email, token)
+      await sendPasswordResetEmail(email, token, user.name)
 
       return reply.send({ message: 'Se o email existir, você receberá as instruções em breve.' })
     }
@@ -388,7 +388,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         data: { resetToken: token, resetTokenExp: exp },
       })
 
-      await sendPasswordResetEmail(target.email, token)
+      await sendPasswordResetEmail(target.email, token, target.name)
 
       await writeAuditLog({
         userId: actor.sub,

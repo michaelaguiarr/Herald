@@ -1,3 +1,5 @@
+import { render } from '@react-email/render'
+import { ResetPasswordEmail } from '../emails/reset-password'
 import { sendEmail } from './email'
 import { env } from './env'
 
@@ -14,16 +16,8 @@ export async function sendMail(options: {
   }
 }
 
-export async function sendPasswordResetEmail(to: string, token: string) {
+export async function sendPasswordResetEmail(to: string, token: string, name: string) {
   const resetUrl = `${env.APP_URL}/reset-password?token=${token}`
-  await sendMail({
-    to,
-    subject: 'Redefinição de senha — Herald',
-    html: `
-      <p>Você solicitou a redefinição da sua senha.</p>
-      <p><a href="${resetUrl}">Clique aqui para redefinir sua senha</a></p>
-      <p>O link expira em 1 hora.</p>
-      <p>Se não foi você, ignore este email.</p>
-    `,
-  })
+  const html = await render(ResetPasswordEmail({ name, resetUrl }))
+  await sendMail({ to, subject: 'Redefinição de senha — Herald', html })
 }
