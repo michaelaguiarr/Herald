@@ -1,31 +1,13 @@
-import nodemailer from 'nodemailer'
+import { sendEmail } from './email'
 import { env } from './env'
-
-function createTransport() {
-  if (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASS) {
-    return null
-  }
-  return nodemailer.createTransport({
-    host: env.SMTP_HOST,
-    port: env.SMTP_PORT,
-    secure: env.SMTP_PORT === 465,
-    auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
-  })
-}
-
-const transport = createTransport()
 
 export async function sendMail(options: {
   to: string
   subject: string
   html: string
-}) {
-  if (!transport) {
-    console.warn('[mailer] SMTP não configurado — email não enviado:', options.subject)
-    return
-  }
+}): Promise<void> {
   try {
-    await transport.sendMail({ from: env.SMTP_FROM, ...options })
+    await sendEmail(options)
   } catch (err) {
     console.error('[mailer] Falha ao enviar email para', options.to, '—', (err as Error).message)
     // Falha de envio não deve propagar como erro HTTP
