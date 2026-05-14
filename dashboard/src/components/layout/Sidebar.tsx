@@ -1,11 +1,13 @@
+import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { LogOut } from 'lucide-react'
+import { LogOut, Lock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Separator } from '@/components/ui/separator'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { useAuthStore } from '@/store/auth.store'
 import { useLogout } from '@/hooks/useLogout'
 import { getFilteredNavItems } from '@/config/nav'
+import { ChangePasswordDialog } from '@/components/shared/ChangePasswordDialog'
 
 const ROLE_LABEL: Record<string, string> = {
   OWNER: 'Owner',
@@ -26,6 +28,7 @@ function getInitials(name: string): string {
 export default function Sidebar() {
   const user = useAuthStore((s) => s.user)
   const logout = useLogout()
+  const [changePwOpen, setChangePwOpen] = useState(false)
 
   if (!user) return null
 
@@ -80,6 +83,17 @@ export default function Sidebar() {
         </div>
 
         <button
+          onClick={() => setChangePwOpen(true)}
+          className={cn(
+            'flex w-full items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors',
+            'text-muted-foreground hover:bg-accent hover:text-foreground'
+          )}
+        >
+          <Lock className="h-4 w-4 shrink-0" />
+          Alterar Senha
+        </button>
+
+        <button
           onClick={logout}
           className={cn(
             'flex w-full items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors',
@@ -90,6 +104,8 @@ export default function Sidebar() {
           Sair
         </button>
       </div>
+
+      <ChangePasswordDialog open={changePwOpen} onClose={() => setChangePwOpen(false)} />
     </aside>
   )
 }
