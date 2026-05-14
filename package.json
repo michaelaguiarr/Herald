@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsup src/server.ts --format cjs --out-dir dist",
+    "build": "tsup src/server.ts --format cjs --out-dir dist && tsup prisma/seed.ts --format cjs --out-dir dist/prisma",
     "start": "node dist/server.js",
     "postinstall": "patch-package",
     "db:migrate": "prisma migrate dev",
@@ -47,6 +47,6 @@
     "typescript": "^5.6.3"
   },
   "prisma": {
-    "seed": "tsx prisma/seed.ts"
+    "seed": "node dist/prisma/seed.js"
   }
 }
