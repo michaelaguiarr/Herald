@@ -2,7 +2,7 @@ services:
   api:
     build: .
     ports:
-      - "3000:3000"
+      - "3100:3000"
     env_file: .env
     environment:
       - WA_SESSIONS_PATH=/app/sessions
@@ -18,7 +18,7 @@ services:
   frontend:
     build: ./dashboard
     ports:
-      - "80:80"
+      - "3101:80"
     depends_on:
       - api
     restart: unless-stopped
