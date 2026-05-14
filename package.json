@@ -33,6 +33,7 @@
     "node-telegram-bot-api": "^0.67.0",
     "nodemailer": "^6.9.16",
     "patch-package": "^8.0.1",
+    "resend": "^6.12.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {
