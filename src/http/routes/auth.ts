@@ -204,6 +204,63 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
   )
 
+  // ── POST /auth/change-password ───────────────────────────────────────────
+
+  f.post(
+    '/auth/change-password',
+    {
+      onRequest: [authenticate],
+      schema: {
+        tags: ['Auth'],
+        summary: 'Alterar senha do usuário autenticado',
+        security: [{ bearerAuth: [] }],
+        body: z.object({
+          currentPassword: z.string().min(1),
+          newPassword: z.string().min(8, 'A nova senha deve ter pelo menos 8 caracteres'),
+          confirmPassword: z.string().min(1),
+        }),
+        response: { 200: z.object({ message: z.string() }) },
+      },
+    },
+    async (request, reply) => {
+      const { currentPassword, newPassword, confirmPassword } = request.body
+      const userId = request.user.sub
+      if (!userId) throw new AppError(401, 'Não autorizado')
+
+      if (newPassword !== confirmPassword) {
+        throw new AppError(400, 'Nova senha e confirmação não coincidem')
+      }
+
+      if (newPassword === currentPassword) {
+        throw new AppError(400, 'A nova senha não pode ser igual à senha atual')
+      }
+
+      const user = await prisma.user.findUnique({ where: { id: userId } })
+      if (!user || !user.active) throw new AppError(404, 'Usuário não encontrado')
+
+      const passwordMatch = await bcrypt.compare(currentPassword, user.passwordHash)
+      if (!passwordMatch) throw new AppError(400, 'Senha atual incorreta')
+
+      const passwordHash = await bcrypt.hash(newPassword, 12)
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { passwordHash },
+      })
+
+      await writeAuditLog({
+        userId: user.id,
+        organizationId: user.organizationId,
+        action: 'USER_CHANGED_PASSWORD',
+        targetId: user.id,
+        targetType: 'user',
+        ipAddress: request.ip,
+      })
+
+      return reply.send({ message: 'Senha alterada com sucesso.' })
+    }
+  )
+
   // ── POST /auth/forgot-password ────────────────────────────────────────────
 
   f.post(
