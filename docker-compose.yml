@@ -8,19 +8,12 @@ services:
       - WA_SESSIONS_PATH=/app/sessions
     volumes:
       - ./whatsapp-sessions:/app/sessions
-    depends_on:
-      postgres:
-        condition: service_started
-      redis:
-        condition: service_started
     restart: unless-stopped
 
   frontend:
     build: ./dashboard
     ports:
       - "3101:80"
-    depends_on:
-      - api
     restart: unless-stopped
 
   postgres:
