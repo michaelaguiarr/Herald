@@ -15,6 +15,7 @@ import UsersPage from '@/pages/Users'
 import OrganizationsPage from '@/pages/Organizations'
 import AuditLogPage from '@/pages/AuditLog'
 import OptOutsPage from '@/pages/OptOuts'
+import ResetPasswordPage from '@/pages/ResetPassword'
 
 // ─── AuthRoute — redirects already-authenticated users away from /login ───────
 
@@ -63,6 +64,7 @@ export default function App() {
         <Routes>
           <Route element={<AuthRoute />}>
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
           </Route>
 
           <Route element={<ProtectedRoute />}>
