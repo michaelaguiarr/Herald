@@ -8,11 +8,13 @@ const envSchema = z.object({
   REDIS_URL: z.string().default('redis://localhost:6379'),
   JWT_SECRET: z.string().min(32),
   CRYPTO_KEY: z.string().length(32),
+  RESEND_API_KEY: z.string().optional(),
+  SMTP_FROM: z.string().default('Herald <no-reply@herald.app>'),
+  // Deprecated — mantidos para compatibilidade com canais Email por-organização
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().default(587),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
-  SMTP_FROM: z.string().default('Herald <no-reply@herald.app>'),
   // Timezone for daily-reset cron (sentToday=0). Default UTC.
   // Use IANA timezone names, e.g. 'America/Sao_Paulo' for BRT (UTC-3).
   DAILY_RESET_TZ: z.string().default('UTC'),
