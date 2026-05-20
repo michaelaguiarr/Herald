@@ -16,6 +16,62 @@ Microserviço de entrega de notificações multi-canal para plataformas de gest�
 
 ---
 
+## Grupos WhatsApp
+
+O Herald suporta envio de notificações para grupos do WhatsApp, além de números individuais.
+
+### Endpoint — listar grupos
+
+```
+GET /v1/whatsapp/groups?channelId=<uuid>
+Authorization: Bearer <token>
+```
+
+Retorna todos os grupos em que o bot participa na sessão Baileys do canal informado. Requer canal com status `ACTIVE` ou `WARMING`.
+
+**Response:**
+```json
+[
+  {
+    "id": "120363123456789012@g.us",
+    "name": "Grupo Pastoral Familiar",
+    "participantsCount": 47
+  }
+]
+```
+
+### Envio para grupo
+
+Passe o `id` do grupo (formato `@g.us`) no campo `recipientPhone` do endpoint de envio:
+
+```bash
+POST /v1/notifications/send
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "organizationId": "<uuid>",
+  "channelType": "WHATSAPP",
+  "recipientName": "Grupo Pastoral Familiar",
+  "recipientPhone": "120363123456789012@g.us",
+  "message": "Aviso: missa de quarta-feira confirmada às 19h30."
+}
+```
+
+O chatId `@g.us` é detectado automaticamente — a verificação individual (`onWhatsApp()`) é ignorada e a mensagem vai direto para o grupo.
+
+### Dashboard
+
+Na tela **Notificações**, botão **Nova Notificação**:
+
+1. Selecione o canal **WhatsApp**
+2. Em **Tipo de destinatário**, escolha **Grupo**
+3. Selecione o **Canal WhatsApp** (sessão Baileys ativa ou em aquecimento)
+4. Escolha o **Grupo** no dropdown — carregado em tempo real da sessão
+5. Preencha o nome e a mensagem e clique em **Enfileirar**
+
+---
+
 ## Hierarquia organizacional
 
 ```

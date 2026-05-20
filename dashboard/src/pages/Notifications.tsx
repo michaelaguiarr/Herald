@@ -1,6 +1,9 @@
 import { useState, useCallback, useEffect } from 'react'
-import { RefreshCw, RotateCcw, Bell, Clock, ImageOff } from 'lucide-react'
+import { RefreshCw, RotateCcw, Bell, Clock, ImageOff, Plus, Users } from 'lucide-react'
 import { toast } from 'sonner'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import {
@@ -9,6 +12,11 @@ import {
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
 } from '@/components/ui/sheet'
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from '@/components/ui/dialog'
+import { Label } from '@/components/ui/label'
+import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
@@ -18,10 +26,13 @@ import { DeliveryStatusBadge } from '@/components/shared/DeliveryStatusBadge'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { Pagination } from '@/components/shared/Pagination'
 import { SkeletonTable } from '@/components/shared/SkeletonTable'
-import { listNotifications, getNotification, retryNotification } from '@/services/notifications.service'
+import { listNotifications, getNotification, retryNotification, sendNotification } from '@/services/notifications.service'
+import { listChannels, listWhatsAppGroups } from '@/services/channels.service'
+import { listOrganizations } from '@/services/organizations.service'
 import { useAuthStore } from '@/store/auth.store'
 import {
   NotificationItem, NotificationDetail, NotificationStatus, ChannelType,
+  Channel, WhatsAppGroup, Organization,
 } from '@/types/api.types'
 import { cn } from '@/lib/utils'
 
@@ -316,11 +327,12 @@ function NotificationRow({
 // ─── Notification Table ───────────────────────────────────────────────────────
 
 function NotificationTable({
-  statusFilter, channelFilter, extraStatusFilter,
+  statusFilter, channelFilter, extraStatusFilter, refreshKey,
 }: {
   statusFilter: NotificationStatus | ''
   channelFilter: ChannelType | ''
   extraStatusFilter?: NotificationStatus
+  refreshKey?: number
 }) {
   const [data, setData] = useState<NotificationItem[]>([])
   const [page, setPage] = useState(1)
@@ -348,7 +360,7 @@ function NotificationTable({
     } finally {
       setLoading(false)
     }
-  }, [page, statusFilter, channelFilter, extraStatusFilter])
+  }, [page, statusFilter, channelFilter, extraStatusFilter, refreshKey])
 
   useEffect(() => { setPage(1) }, [statusFilter, channelFilter])
   useEffect(() => { load() }, [load])
@@ -420,12 +432,374 @@ function NotificationTable({
   )
 }
 
+// ─── Send Notification Dialog ─────────────────────────────────────────────────
+
+const sendSchema = z.object({
+  organizationId: z.string().optional(),
+  channelType: z.enum(['WHATSAPP', 'EMAIL', 'TELEGRAM']),
+  recipientName: z.string().min(1, 'Nome é obrigatório'),
+  message: z.string().min(1, 'Mensagem é obrigatória'),
+  recipientMode: z.enum(['individual', 'group']).default('individual'),
+  recipientPhone: z.string().optional(),
+  recipientEmail: z.string().optional(),
+  recipientTelegramId: z.string().optional(),
+  whatsappChannelId: z.string().optional(),
+  groupChatId: z.string().optional(),
+})
+
+type SendFormValues = z.infer<typeof sendSchema>
+
+function SendNotificationDialog({
+  open, onClose, onSent,
+}: {
+  open: boolean
+  onClose: () => void
+  onSent: () => void
+}) {
+  const role = useAuthStore((s) => s.user?.role)
+  const storeOrgId = useAuthStore((s) => s.user?.organizationId ?? null)
+  const isOwner = role === 'OWNER'
+
+  const [orgs, setOrgs] = useState<Organization[]>([])
+  const [waChannels, setWaChannels] = useState<Channel[]>([])
+  const [groups, setGroups] = useState<WhatsAppGroup[]>([])
+  const [loadingGroups, setLoadingGroups] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+
+  const form = useForm<SendFormValues>({
+    resolver: zodResolver(sendSchema as never),
+    defaultValues: {
+      organizationId: storeOrgId ?? '',
+      channelType: 'WHATSAPP',
+      recipientMode: 'individual',
+      recipientName: '',
+      message: '',
+    },
+  })
+
+  const channelType = form.watch('channelType')
+  const recipientMode = form.watch('recipientMode')
+  const whatsappChannelId = form.watch('whatsappChannelId')
+  const selectedOrgId = form.watch('organizationId')
+
+  useEffect(() => {
+    if (!open) return
+    if (isOwner) {
+      listOrganizations().then(setOrgs).catch(() => {})
+    }
+    const orgFilter = isOwner ? selectedOrgId : (storeOrgId ?? undefined)
+    listChannels('WHATSAPP').then((chs) => {
+      setWaChannels(
+        chs.filter((c) =>
+          (c.status === 'ACTIVE' || c.status === 'WARMING') &&
+          (!orgFilter || c.organizationId === orgFilter)
+        )
+      )
+    }).catch(() => {})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  // Para OWNER: refiltra canais WA quando muda a org selecionada
+  useEffect(() => {
+    if (!isOwner || !open) return
+    form.setValue('whatsappChannelId', '')
+    form.setValue('groupChatId', '')
+    setGroups([])
+    listChannels('WHATSAPP').then((chs) => {
+      setWaChannels(
+        chs.filter((c) =>
+          (c.status === 'ACTIVE' || c.status === 'WARMING') &&
+          (!selectedOrgId || c.organizationId === selectedOrgId)
+        )
+      )
+    }).catch(() => {})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOrgId])
+
+  useEffect(() => {
+    if (!whatsappChannelId) { setGroups([]); return }
+    setLoadingGroups(true)
+    listWhatsAppGroups(whatsappChannelId)
+      .then(setGroups)
+      .catch(() => toast.error('Falha ao carregar grupos'))
+      .finally(() => setLoadingGroups(false))
+  }, [whatsappChannelId])
+
+  useEffect(() => {
+    form.setValue('recipientPhone', '')
+    form.setValue('recipientEmail', '')
+    form.setValue('recipientTelegramId', '')
+    form.setValue('recipientMode', 'individual')
+    form.setValue('whatsappChannelId', '')
+    form.setValue('groupChatId', '')
+    setGroups([])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelType])
+
+  useEffect(() => {
+    if (recipientMode === 'individual') {
+      form.setValue('whatsappChannelId', '')
+      form.setValue('groupChatId', '')
+      setGroups([])
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recipientMode])
+
+  async function onSubmit(values: SendFormValues) {
+    if (values.channelType === 'WHATSAPP') {
+      if (values.recipientMode === 'individual' && !values.recipientPhone?.trim()) {
+        form.setError('recipientPhone', { message: 'Telefone é obrigatório' }); return
+      }
+      if (values.recipientMode === 'group' && !values.whatsappChannelId) {
+        form.setError('whatsappChannelId', { message: 'Selecione um canal' }); return
+      }
+      if (values.recipientMode === 'group' && !values.groupChatId) {
+        form.setError('groupChatId', { message: 'Selecione um grupo' }); return
+      }
+    }
+    if (values.channelType === 'EMAIL' && !values.recipientEmail?.trim()) {
+      form.setError('recipientEmail', { message: 'Email é obrigatório' }); return
+    }
+    if (values.channelType === 'TELEGRAM' && !values.recipientTelegramId?.trim()) {
+      form.setError('recipientTelegramId', { message: 'Telegram ID é obrigatório' }); return
+    }
+
+    const effectiveOrgId = isOwner ? values.organizationId : (storeOrgId ?? '')
+    if (!effectiveOrgId) {
+      form.setError('organizationId', { message: 'Selecione uma organização' }); return
+    }
+
+    setSubmitting(true)
+    try {
+      const payload = {
+        organizationId: effectiveOrgId,
+        channelType: values.channelType,
+        recipientName: values.recipientName,
+        message: values.message,
+        ...(values.channelType === 'WHATSAPP' && {
+          recipientPhone: values.recipientMode === 'group' ? values.groupChatId : values.recipientPhone,
+        }),
+        ...(values.channelType === 'EMAIL' && { recipientEmail: values.recipientEmail }),
+        ...(values.channelType === 'TELEGRAM' && { recipientTelegramId: values.recipientTelegramId }),
+      }
+      await sendNotification(payload)
+      toast.success('Notificação enfileirada com sucesso')
+      form.reset()
+      onSent()
+      onClose()
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+        ?? 'Falha ao enviar notificação'
+      toast.error(msg)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Nova Notificação</DialogTitle>
+          <DialogDescription>Preencha os dados para enfileirar uma notificação.</DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 mt-2">
+          {/* Organização (apenas OWNER) */}
+          {isOwner && (
+            <div className="space-y-1.5">
+              <Label>Organização</Label>
+              <Select
+                value={selectedOrgId ?? ''}
+                onValueChange={(v) => form.setValue('organizationId', v)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione a organização" />
+                </SelectTrigger>
+                <SelectContent>
+                  {orgs.map((o) => (
+                    <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {form.formState.errors.organizationId && (
+                <p className="text-xs text-destructive">{form.formState.errors.organizationId.message}</p>
+              )}
+            </div>
+          )}
+
+          {/* Canal */}
+          <div className="space-y-1.5">
+            <Label>Canal</Label>
+            <Select
+              value={channelType}
+              onValueChange={(v) => form.setValue('channelType', v as 'WHATSAPP' | 'EMAIL' | 'TELEGRAM')}
+            >
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="WHATSAPP">WhatsApp</SelectItem>
+                <SelectItem value="EMAIL">Email</SelectItem>
+                <SelectItem value="TELEGRAM">Telegram</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Nome do destinatário */}
+          <div className="space-y-1.5">
+            <Label>Nome do destinatário</Label>
+            <Input {...form.register('recipientName')} placeholder="Ex: João Silva" />
+            {form.formState.errors.recipientName && (
+              <p className="text-xs text-destructive">{form.formState.errors.recipientName.message}</p>
+            )}
+          </div>
+
+          {/* WhatsApp: individual / grupo */}
+          {channelType === 'WHATSAPP' && (
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <Label>Tipo de destinatário</Label>
+                <Select
+                  value={recipientMode}
+                  onValueChange={(v) => form.setValue('recipientMode', v as 'individual' | 'group')}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="individual">Número individual</SelectItem>
+                    <SelectItem value="group">
+                      <span className="flex items-center gap-1.5">
+                        <Users className="h-3.5 w-3.5" />
+                        Grupo
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {recipientMode === 'individual' && (
+                <div className="space-y-1.5">
+                  <Label>Telefone</Label>
+                  <Input {...form.register('recipientPhone')} placeholder="5595991234567" />
+                  {form.formState.errors.recipientPhone && (
+                    <p className="text-xs text-destructive">{form.formState.errors.recipientPhone.message}</p>
+                  )}
+                </div>
+              )}
+
+              {recipientMode === 'group' && (
+                <div className="space-y-3">
+                  <div className="space-y-1.5">
+                    <Label>Canal WhatsApp</Label>
+                    <Select
+                      value={whatsappChannelId ?? ''}
+                      onValueChange={(v) => form.setValue('whatsappChannelId', v)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder={waChannels.length === 0 ? 'Nenhum canal ATIVO' : 'Selecione o canal'} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {waChannels.map((ch) => (
+                          <SelectItem key={ch.id} value={ch.id}>{ch.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {form.formState.errors.whatsappChannelId && (
+                      <p className="text-xs text-destructive">{form.formState.errors.whatsappChannelId.message}</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label>Grupo</Label>
+                    <Select
+                      value={form.watch('groupChatId') ?? ''}
+                      onValueChange={(v) => form.setValue('groupChatId', v)}
+                      disabled={!whatsappChannelId || loadingGroups}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder={
+                          loadingGroups ? 'Carregando grupos...' :
+                          !whatsappChannelId ? 'Selecione um canal primeiro' :
+                          groups.length === 0 ? 'Nenhum grupo encontrado' :
+                          'Selecione um grupo'
+                        } />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {groups.map((g) => (
+                          <SelectItem key={g.id} value={g.id}>
+                            {g.name}
+                            <span className="ml-1.5 text-muted-foreground text-xs">({g.participantsCount})</span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {form.formState.errors.groupChatId && (
+                      <p className="text-xs text-destructive">{form.formState.errors.groupChatId.message}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Email */}
+          {channelType === 'EMAIL' && (
+            <div className="space-y-1.5">
+              <Label>Email</Label>
+              <Input {...form.register('recipientEmail')} type="email" placeholder="joao@exemplo.com" />
+              {form.formState.errors.recipientEmail && (
+                <p className="text-xs text-destructive">{form.formState.errors.recipientEmail.message}</p>
+              )}
+            </div>
+          )}
+
+          {/* Telegram */}
+          {channelType === 'TELEGRAM' && (
+            <div className="space-y-1.5">
+              <Label>Telegram ID</Label>
+              <Input {...form.register('recipientTelegramId')} placeholder="123456789" />
+              {form.formState.errors.recipientTelegramId && (
+                <p className="text-xs text-destructive">{form.formState.errors.recipientTelegramId.message}</p>
+              )}
+            </div>
+          )}
+
+          {/* Mensagem */}
+          <div className="space-y-1.5">
+            <Label>Mensagem</Label>
+            <textarea
+              {...form.register('message')}
+              rows={3}
+              placeholder="Digite a mensagem..."
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 resize-none"
+            />
+            {form.formState.errors.message && (
+              <p className="text-xs text-destructive">{form.formState.errors.message.message}</p>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2 pt-1">
+            <Button type="button" variant="outline" onClick={onClose} disabled={submitting}>
+              Cancelar
+            </Button>
+            <Button type="submit" disabled={submitting}>
+              {submitting
+                ? <><RefreshCw className="h-3.5 w-3.5 animate-spin mr-1" />Enviando...</>
+                : 'Enfileirar'}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function NotificationsPage() {
-  // 'all' = no filter, otherwise the enum value
   const [statusFilter, setStatusFilter] = useState('all')
   const [channelFilter, setChannelFilter] = useState('all')
+  const [sendOpen, setSendOpen] = useState(false)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const role = useAuthStore((s) => s.user?.role)
 
   function toStatusFilter(v: string): NotificationStatus | '' {
     return v === 'all' ? '' : v as NotificationStatus
@@ -439,8 +813,8 @@ export default function NotificationsPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-xl font-semibold">Notificações</h1>
 
-        {/* Filters */}
-        <div className="flex gap-2 flex-wrap">
+        {/* Filters + actions */}
+        <div className="flex gap-2 flex-wrap items-center">
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="w-44 h-9 text-sm">
               <SelectValue placeholder="Todos os status" />
@@ -466,8 +840,21 @@ export default function NotificationsPage() {
               ))}
             </SelectContent>
           </Select>
+
+          {role && ['OWNER', 'SUPER_ADMIN', 'ADMIN'].includes(role) && (
+            <Button size="sm" onClick={() => setSendOpen(true)}>
+              <Plus className="h-3.5 w-3.5 mr-1" />
+              Nova Notificação
+            </Button>
+          )}
         </div>
       </div>
+
+      <SendNotificationDialog
+        open={sendOpen}
+        onClose={() => setSendOpen(false)}
+        onSent={() => setRefreshKey((k) => k + 1)}
+      />
 
       <Tabs defaultValue="all">
         <TabsList>
@@ -485,6 +872,7 @@ export default function NotificationsPage() {
           <NotificationTable
             statusFilter={toStatusFilter(statusFilter)}
             channelFilter={toChannelFilter(channelFilter)}
+            refreshKey={refreshKey}
           />
         </TabsContent>
 
@@ -493,6 +881,7 @@ export default function NotificationsPage() {
             statusFilter={toStatusFilter(statusFilter)}
             channelFilter={toChannelFilter(channelFilter)}
             extraStatusFilter="AGENDADO"
+            refreshKey={refreshKey}
           />
         </TabsContent>
       </Tabs>

@@ -856,6 +856,29 @@
           "response": []
         },
         {
+          "name": "Listar Grupos WhatsApp",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/whatsapp/groups?channelId={{waChannelId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "whatsapp", "groups"],
+              "query": [
+                {
+                  "key": "channelId",
+                  "value": "{{waChannelId}}",
+                  "description": "ID do canal WhatsApp (deve estar ACTIVE ou WARMING)"
+                }
+              ]
+            },
+            "description": "Retorna todos os grupos do WhatsApp em que o bot da sessão Baileys participa.\n\nUse o `id` retornado (formato `@g.us`) como `recipientPhone` no endpoint de envio de notificações para entregar mensagens ao grupo.\n\n**Perfil mínimo:** ADMIN\n\n**Pré-requisito:** canal com status `ACTIVE` ou `WARMING` — bot já deve ter escaneado o QR Code.\n\n**Response:**\n```json\n[\n  {\n    \"id\": \"120363123456789012@g.us\",\n    \"name\": \"Grupo Pastoral Familiar\",\n    \"participantsCount\": 47\n  },\n  {\n    \"id\": \"120363098765432101@g.us\",\n    \"name\": \"Avisos — Comunidade São Pedro\",\n    \"participantsCount\": 112\n  }\n]\n```\n\n**Erros comuns:**\n- `404` — canal não encontrado\n- `400` — canal não é do tipo WhatsApp\n- `500` — sessão não está conectada (DISCONNECTED ou BANNED)"
+          },
+          "response": []
+        },
+        {
           "name": "[Dev] Ver Credenciais Descriptografadas",
           "request": {
             "method": "GET",
@@ -936,6 +959,28 @@
               "path": ["v1", "notifications", "send"]
             },
             "description": "Enfileira uma notificação para entrega via WhatsApp. O job é criado e processado pelo worker, que seleciona o melhor número disponível do pool respeitando `dailyLimit` e `hourlyLimit`.\n\n⚠️ Requer um canal WhatsApp com sessão Baileys ativa (status `ACTIVE`). Sem canal configurado, a notificação vai para `FALHOU`."
+          },
+          "response": []
+        },
+        {
+          "name": "Enviar Notificação (WhatsApp — Grupo)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{orgId}}\",\n  \"channelType\": \"WHATSAPP\",\n  \"recipientName\": \"Grupo Pastoral Familiar\",\n  \"recipientPhone\": \"120363123456789012@g.us\",\n  \"message\": \"Aviso: missa de quarta-feira confirmada às 19h30. Contamos com a presença de todos!\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/notifications/send",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "notifications", "send"]
+            },
+            "description": "Enfileira uma notificação para entrega em um **grupo do WhatsApp**.\n\nO `recipientPhone` deve conter o `id` retornado pelo endpoint `GET /v1/whatsapp/groups` — formato `@g.us`.\n\n**Como obter o chatId do grupo:**\n1. Chame `GET /v1/whatsapp/groups?channelId={{waChannelId}}`\n2. Copie o campo `id` do grupo desejado (ex: `120363123456789012@g.us`)\n3. Use-o como `recipientPhone` neste request\n\n**Comportamento:**\n- O chatId `@g.us` é detectado automaticamente — a verificação `onWhatsApp()` é ignorada\n- A mensagem é entregue diretamente ao grupo sem resolução de JID individual\n- O worker seleciona o canal WHATSAPP disponível normalmente (pool rotation)\n\n**Requer:** canal WhatsApp com sessão ativa (`ACTIVE` ou `WARMING`) e bot participante do grupo."
           },
           "response": []
         },

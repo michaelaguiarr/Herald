@@ -258,57 +258,68 @@ export class BaileysClient extends EventEmitter {
       )
     }
 
-    const normalized = phone.replace(/\D/g, '')
-    const jid = `${normalized}@s.whatsapp.net`
-
-    // Step 1 — Resolve JID (cache-first).
-    // onWhatsApp returns the canonical JID from WhatsApp servers, which in
-    // Baileys v7 can be LID-based. Sending to the raw phone JID causes silent
-    // delivery failures. Results are cached 24h to avoid a round-trip per send
-    // for recurring recipients (dizimistas, broadcast lists).
-    let resolvedJid = jid
+    // Groups: chatId is provided as a full JID (e.g. 1234567890-1234567890@g.us).
+    // Skip phone normalization and onWhatsApp() — group JIDs are stable and don't
+    // go through individual number resolution.
+    const isGroup = phone.endsWith('@g.us')
+    let resolvedJid: string
     let jidVerified = false
 
-    const cachedJid = await getCachedJid(phone)
-    if (cachedJid) {
-      resolvedJid = cachedJid
-      jidVerified = true
-      console.log(`[wa:cache] HIT ${phone} → ${resolvedJid}`)
+    if (isGroup) {
+      resolvedJid = phone
+      console.log(`[wa:${this.channelId}] sendMessage → grupo JID=${resolvedJid}`)
     } else {
-      console.log(`[wa:cache] MISS ${phone} → resolvendo via onWhatsApp()`)
-      try {
-        const checks = await this.socket.onWhatsApp(jid)
-        const check = checks?.[0]
-        // Baileys v7 returns [] (empty array) for non-existent numbers — NOT { exists: false }.
-        // Strict equality `=== false` misses this case: undefined === false → false.
-        // !check catches the empty-array case; check.exists === false catches the explicit case.
-        if (!check || check.exists === false) {
-          throw new WhatsAppNumberNotFoundError(phone)
-        }
-        if (check.exists && check.jid) {
-          resolvedJid = check.jid  // canonical JID (may be LID in v7)
-          jidVerified = true
-          await setCachedJid(phone, resolvedJid)  // warm the JID cache for next send
-          // Store reverse LID→phone mapping so incoming opt-out messages can be
-          // matched back to the phone number stored in notifications.
-          const lidUser = resolvedJid.split('@')[0]
-          if (resolvedJid.endsWith('@lid') && lidUser) {
-            await setPhoneForLid(lidUser, normalized)
-          }
-        }
-        console.log(
-          `[wa:${this.channelId}] onWhatsApp → raw=${jid} resolved=${resolvedJid} exists=${jidVerified}`
-        )
-      } catch (verifyErr) {
-        // WhatsAppNumberNotFoundError is a terminal condition — propagate as-is
-        // so the worker can detect it and skip retry scheduling.
-        if (verifyErr instanceof WhatsAppNumberNotFoundError) throw verifyErr
+      const normalized = phone.replace(/\D/g, '')
+      const jid = `${normalized}@s.whatsapp.net`
 
-        const msg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr)
-        // Re-throw all other errors — transient socket/session failures should
-        // be retried. Sending with an unresolved raw JID causes silent delivery
-        // failure in Baileys v7 (LID-based routing).
-        throw new Error(`Falha ao verificar JID no WhatsApp para ${jid}: ${msg}`)
+      // Step 1 — Resolve JID (cache-first).
+      // onWhatsApp returns the canonical JID from WhatsApp servers, which in
+      // Baileys v7 can be LID-based. Sending to the raw phone JID causes silent
+      // delivery failures. Results are cached 24h to avoid a round-trip per send
+      // for recurring recipients (dizimistas, broadcast lists).
+      resolvedJid = jid
+
+      const cachedJid = await getCachedJid(phone)
+      if (cachedJid) {
+        resolvedJid = cachedJid
+        jidVerified = true
+        console.log(`[wa:cache] HIT ${phone} → ${resolvedJid}`)
+      } else {
+        console.log(`[wa:cache] MISS ${phone} → resolvendo via onWhatsApp()`)
+        try {
+          const checks = await this.socket.onWhatsApp(jid)
+          const check = checks?.[0]
+          // Baileys v7 returns [] (empty array) for non-existent numbers — NOT { exists: false }.
+          // Strict equality `=== false` misses this case: undefined === false → false.
+          // !check catches the empty-array case; check.exists === false catches the explicit case.
+          if (!check || check.exists === false) {
+            throw new WhatsAppNumberNotFoundError(phone)
+          }
+          if (check.exists && check.jid) {
+            resolvedJid = check.jid  // canonical JID (may be LID in v7)
+            jidVerified = true
+            await setCachedJid(phone, resolvedJid)  // warm the JID cache for next send
+            // Store reverse LID→phone mapping so incoming opt-out messages can be
+            // matched back to the phone number stored in notifications.
+            const lidUser = resolvedJid.split('@')[0]
+            if (resolvedJid.endsWith('@lid') && lidUser) {
+              await setPhoneForLid(lidUser, normalized)
+            }
+          }
+          console.log(
+            `[wa:${this.channelId}] onWhatsApp → raw=${jid} resolved=${resolvedJid} exists=${jidVerified}`
+          )
+        } catch (verifyErr) {
+          // WhatsAppNumberNotFoundError is a terminal condition — propagate as-is
+          // so the worker can detect it and skip retry scheduling.
+          if (verifyErr instanceof WhatsAppNumberNotFoundError) throw verifyErr
+
+          const msg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr)
+          // Re-throw all other errors — transient socket/session failures should
+          // be retried. Sending with an unresolved raw JID causes silent delivery
+          // failure in Baileys v7 (LID-based routing).
+          throw new Error(`Falha ao verificar JID no WhatsApp para ${jid}: ${msg}`)
+        }
       }
     }
 
@@ -329,12 +340,12 @@ export class BaileysClient extends EventEmitter {
     // proto.WebMessageInfo.Status: 0=ERROR, 1=PENDING, 2=SERVER_ACK, 3=DELIVERY_ACK
     if (!result?.key?.id) {
       throw new Error(
-        `Baileys não retornou ID de mensagem para ${jid} — envio falhou silenciosamente`
+        `Baileys não retornou ID de mensagem para ${resolvedJid} — envio falhou silenciosamente`
       )
     }
     if (result.status === 0) {
       throw new Error(
-        `WA server rejeitou a mensagem para ${jid} ` +
+        `WA server rejeitou a mensagem para ${resolvedJid} ` +
         `(status=0 ERROR, msgId=${result.key.id})`
       )
     }
@@ -416,5 +427,17 @@ export class BaileysClient extends EventEmitter {
         sendError: err instanceof Error ? err.message : String(err),
       }
     }
+  }
+
+  async getGroups(): Promise<{ id: string; name: string; participantsCount: number }[]> {
+    if (!this.socket || (this._status !== 'ACTIVE' && this._status !== 'WARMING')) {
+      throw new Error(`Sessão WhatsApp ${this.channelId} não está conectada (status: ${this._status})`)
+    }
+    const groups = await this.socket.groupFetchAllParticipating()
+    return Object.values(groups).map((g) => ({
+      id: g.id,
+      name: g.subject,
+      participantsCount: g.participants.length,
+    }))
   }
 }

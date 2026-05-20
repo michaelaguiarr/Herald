@@ -62,6 +62,14 @@ export interface Organization {
   createdAt: string
 }
 
+// ─── WhatsApp Groups ──────────────────────────────────────────────────────────
+
+export interface WhatsAppGroup {
+  id: string
+  name: string
+  participantsCount: number
+}
+
 // ─── Channels ─────────────────────────────────────────────────────────────────
 
 export type ChannelType = 'WHATSAPP' | 'EMAIL' | 'TELEGRAM'
@@ -185,6 +193,18 @@ export interface PaginatedResponse<T> {
   total: number
   page: number
   pages: number
+}
+
+export interface SendNotificationData {
+  organizationId: string
+  channelType: ChannelType
+  recipientName: string
+  recipientPhone?: string
+  recipientEmail?: string
+  recipientTelegramId?: string
+  message: string
+  imageUrl?: string
+  imageCaption?: string
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────

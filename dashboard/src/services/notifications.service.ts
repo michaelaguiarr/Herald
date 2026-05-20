@@ -5,6 +5,7 @@ import {
   NotificationStatus,
   ChannelType,
   PaginatedResponse,
+  SendNotificationData,
 } from '@/types/api.types'
 
 interface ListParams {
@@ -32,4 +33,9 @@ export async function getNotification(id: string): Promise<NotificationDetail> {
 
 export async function retryNotification(id: string): Promise<void> {
   await api.post(`/notifications/${id}/retry`)
+}
+
+export async function sendNotification(payload: SendNotificationData): Promise<NotificationItem> {
+  const { data } = await api.post<NotificationItem>('/notifications/send', payload)
+  return data
 }

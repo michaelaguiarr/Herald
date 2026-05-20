@@ -1,5 +1,5 @@
 import { api } from '@/services/api'
-import { Channel, ChannelType, CreateChannelData, UpdateChannelData } from '@/types/api.types'
+import { Channel, ChannelType, CreateChannelData, UpdateChannelData, WhatsAppGroup } from '@/types/api.types'
 
 export async function listChannels(type?: ChannelType): Promise<Channel[]> {
   const params: Record<string, string> = {}
@@ -28,4 +28,9 @@ export async function reconnectChannel(id: string): Promise<void> {
 
 export async function disconnectChannel(id: string): Promise<void> {
   await api.post(`/channels/${id}/disconnect`)
+}
+
+export async function listWhatsAppGroups(channelId: string): Promise<WhatsAppGroup[]> {
+  const { data } = await api.get<WhatsAppGroup[]>('/whatsapp/groups', { params: { channelId } })
+  return data
 }

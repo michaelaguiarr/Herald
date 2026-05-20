@@ -343,6 +343,14 @@ class WhatsAppSessionManager {
     return session.sendMessage(phone, text, opts)
   }
 
+  async getGroups(channelId: string): Promise<{ id: string; name: string; participantsCount: number }[]> {
+    const session = this.sessions.get(channelId)
+    if (!session) {
+      throw new Error(`Sessão WhatsApp ${channelId} não encontrada`)
+    }
+    return session.getGroups()
+  }
+
   getSession(channelId: string): BaileysClient | undefined {
     return this.sessions.get(channelId)
   }

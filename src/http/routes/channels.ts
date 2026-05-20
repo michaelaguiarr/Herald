@@ -571,6 +571,37 @@ export async function channelsRoutes(fastify: FastifyInstance) {
     }
   )
 
+  f.get(
+    '/whatsapp/groups',
+    {
+      onRequest: [authenticate, requireRole(UserRole.OWNER, UserRole.SUPER_ADMIN, UserRole.ADMIN)],
+      schema: {
+        tags: ['WhatsApp'],
+        summary: 'Listar grupos do WhatsApp em que o bot participa',
+        security: [{ bearerAuth: [] }],
+        querystring: z.object({ channelId: z.string().uuid() }),
+        response: {
+          200: z.array(z.object({
+            id: z.string(),
+            name: z.string(),
+            participantsCount: z.number(),
+          })),
+        },
+      },
+    },
+    async (request, reply) => {
+      const { channelId } = request.query
+      const channel = await prisma.channel.findUnique({ where: { id: channelId } })
+      if (!channel) throw new AppError(404, 'Canal não encontrado')
+      if (channel.type !== ChannelType.WHATSAPP) throw new AppError(400, 'Canal não é do tipo WhatsApp')
+
+      await assertOrgAccess(request.user, channel.organizationId)
+
+      const groups = await whatsappSessionManager.getGroups(channelId)
+      return reply.send(groups)
+    }
+  )
+
   // Endpoint to expose decrypted credentials for debugging (OWNER only, dev only)
   f.get(
     '/channels/:id/credentials',
