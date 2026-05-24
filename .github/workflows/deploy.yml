@@ -35,7 +35,7 @@ jobs:
           echo "Aguardando 30s para a aplicação subir..."
           sleep 30
 
-          HEALTH_URL="https://app.michaelsolutions.com.br/health"
+          HEALTH_URL="https://app.michaelsolutions.com.br/api/health"
           MAX_RETRIES=3
           ATTEMPT=0
 
