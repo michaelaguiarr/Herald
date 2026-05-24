@@ -14,6 +14,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set short SHA
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+
       - name: Deploy on VPS
         uses: appleboy/ssh-action@v1.0.0
         with:
@@ -26,3 +29,27 @@ jobs:
             git pull
             docker compose up --build -d
             docker compose exec api npx prisma migrate deploy
+
+      - name: Notify Telegram — success
+        if: success()
+        uses: appleboy/telegram-action@v1.0.0
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          message: |
+            ✅ Herald — deploy concluído
+            Branch: main
+            Commit: ${{ env.SHORT_SHA }}
+            Por: ${{ github.event.head_commit.author.name }}
+
+      - name: Notify Telegram — failure
+        if: failure()
+        uses: appleboy/telegram-action@v1.0.0
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          message: |
+            ❌ Herald — deploy falhou
+            Branch: main
+            Commit: ${{ env.SHORT_SHA }}
+            Por: ${{ github.event.head_commit.author.name }}
