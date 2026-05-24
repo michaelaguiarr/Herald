@@ -16,6 +16,7 @@ import { notificationsRoutes } from './http/routes/notifications'
 import { dashboardRoutes } from './http/routes/dashboard'
 import { auditLogsRoutes } from './http/routes/audit-logs'
 import { optOutsRoutes } from './http/routes/opt-outs'
+import { healthRoutes } from './http/routes/health'
 import { startNotificationWorker } from './workers/notification.worker'
 import { startAlertWorker } from './workers/alert.worker'
 import { startSchedulerWorker, registerDailyJobs } from './workers/scheduler.worker'
@@ -74,6 +75,7 @@ export async function buildApp() {
 
   app.setErrorHandler(errorHandler)
 
+  await app.register(healthRoutes)
   await app.register(authRoutes, { prefix: '/v1' })
   await app.register(organizationsRoutes, { prefix: '/v1' })
   await app.register(usersRoutes, { prefix: '/v1' })
