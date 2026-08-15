@@ -25,7 +25,7 @@
     "@prisma/client": "^5.22.0",
     "@react-email/components": "^1.0.12",
     "@react-email/render": "^2.0.8",
-    "@whiskeysockets/baileys": "^7.0.0-rc10",
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
     "bcrypt": "^5.1.1",
     "bullmq": "^5.76.7",
     "dotenv": "^17.4.2",

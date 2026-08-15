@@ -266,7 +266,7 @@ O histórico completo está nos commits — esta seção serve como referência 
 | **Race condition no reconnect** | `disconnect()` chamava `socket.end()` e o evento `connection.update: close` chegava assincronamente, gravando DISCONNECTED no DB após o status WARMING já ter sido setado pelo `/reconnect` | Socket capturado em variável local no closure de `connect()`; handler verifica `this.socket !== socket` antes de processar — eventos de socket substituído são descartados |
 | **JID resolution (LID)** | `onWhatsApp()` retorna `results[0].jid` com o JID canônico do WA que em Baileys v7 pode ser LID-based (`@lid`); enviávamos para o JID raw (`@s.whatsapp.net`) e a mensagem era descartada silenciosamente | `resolvedJid = check.jid \|\| jid` — usa sempre o JID retornado pelo WA |
 | **`getMessage` ausente no socket config** | Sem `getMessage`, Baileys falha ao tentar recuperar mensagens pendentes no reconnect, fecha sessões Signal e gera `Decrypted message with closed session` em loop | Adicionado `getMessage: async () => ({ conversation: '' })` ao `makeWASocket` |
-| **Baileys v7 + Node.js v26 incompatibilidade** | `whatsapp-rust-bridge@0.5.3` só exporta condição `"import"` (ESM); Node.js v26 + tsx CJS register lança `ERR_PACKAGE_PATH_NOT_EXPORTED` | Patch `patches/whatsapp-rust-bridge+0.5.3.patch` adiciona `"default": "./dist/index.js"`; `patch-package` aplica automaticamente no `postinstall`; `tsconfig.json` migrado para `NodeNext` |
+| **Baileys v7 + Node.js v26 incompatibilidade** | `whatsapp-rust-bridge` só exporta condição `"import"` (ESM); Node.js v26 + tsx CJS register lança `ERR_PACKAGE_PATH_NOT_EXPORTED` | Patch `patches/whatsapp-rust-bridge+0.5.4.patch` adiciona `"default": "./dist/index.js"`; `patch-package` aplica automaticamente no `postinstall`; `tsconfig.json` migrado para `NodeNext`. **O nome do arquivo carrega a versão** — ao subir o Baileys, conferir se a dependência mudou de versão e regerar o patch, senão ele é silenciosamente ignorado |
 | **`result.status` ignorado no envio** | `socket.sendMessage()` retornava sem exceção mesmo quando WA server rejeitava (`status=0 ERROR`) ou quando Baileys não gerava ID de mensagem — worker marcava ENVIADO incondicionalmente | Verificações adicionadas: `!result?.key?.id` → lança erro; `result.status === 0` → lança erro com mensagem explícita |
 | **`onWhatsApp` bypassado silenciosamente** | Bloco try/catch engolia qualquer exceção de `onWhatsApp` que não fosse exatamente "não encontrado" — número inválido ou erros de sessão faziam o envio prosseguir sem verificação | Erro "não encontrado" re-lançado; demais erros logam `raw=` e `resolved=` para diagnóstico; envio prossegue mas com aviso explícito no log |
 | **Retry bloqueado para status ENVIADO** | Endpoint `/retry` só aceitava `FALHOU` ou `FALHOU_DEFINITIVO`; após ENVIADO sem entrega real o operador não conseguia reenviar | `ENVIADO` adicionado à lista de statuses retentáveis — ENVIADO confirma apenas que Baileys não lançou exceção, não que o destinatário recebeu |
@@ -291,6 +291,57 @@ Regressão introduzida em `2587674` (Fase 5): notificações voltaram a ser marc
 | **`connectedAt` ausente no response da API** | — | `channelShape` em `channels.ts` não incluía `connectedAt`. Campo estava no banco mas omitido na serialização Zod/Fastify. Operadores não conseguiam distinguir "canal conectado há X dias" de "canal nunca autenticado" — gerou falso positivo de diagnóstico. | `connectedAt: z.date().nullable()` adicionado ao `channelShape`. Agora visível em `GET /v1/channels` e `GET /v1/channels/:id`. |
 
 ---
+
+## Incidente: 405 Connection Failure — versão de protocolo defasada
+
+**Sintoma:** todas as sessões WhatsApp param de conectar. QR Code nunca é emitido
+(frontend fica em "Gerando QR Code..." infinito). Loop de reconexão acumula
+dezenas de milhares de tentativas. Afeta inclusive canais recém-criados que
+nunca parearam — sinal de que **não** é credencial, sessão nem canal específico.
+
+**Causa:** o Baileys v7 hardcoda a versão do protocolo WhatsApp em
+`DEFAULT_CONNECTION_CONFIG` (`fetchLatestBaileysVersion()` foi removida na v7).
+Quando o WhatsApp corta a versão no servidor, todo `connect` é recusado no
+handshake com `405 Method Not Allowed / Connection Failure`.
+
+**Diagnóstico — como confirmar:**
+
+```
+[wa:close] <id> statusCode=405 reason=desconhecido(405) qrEmitidos=0 credsUpdates=0
+           erro=Error: Connection Failure
+           payload={"statusCode":405,"error":"Method Not Allowed",...}
+```
+
+`qrEmitidos=0` + `credsUpdates=0` provam que a conexão morre **antes** do
+handshake produzir qualquer coisa. 405 não faz parte do enum `DisconnectReason`
+do Baileys justamente porque não é um disconnect de sessão.
+
+Comparar a versão hardcoded instalada com a da última release:
+
+```bash
+grep "const version" node_modules/@whiskeysockets/baileys/lib/Defaults/index.js
+npm view @whiskeysockets/baileys version
+```
+
+**Não confundir com rate limit de IP.** Um canal novo, sem credenciais, tomando
+405 na primeiríssima tentativa descarta rate limit — assim como o fato de não
+haver recuperação espontânea após dias. Para isolar, rodar um teste de conexão
+com a versão nova a partir do IP de produção antes de deployar.
+
+**Correção:** subir o Baileys para a release que contém o bump de versão.
+
+| Data | Versão Baileys | Versão WA hardcoded |
+|---|---|---|
+| corte em 2026-07-29 | `7.0.0-rc10` | `[2, 3000, 1035194821]` |
+| correção | `7.0.0-rc14` | `[2, 3000, 1043857760]` |
+
+Ao subir, conferir também `whatsapp-rust-bridge` (patch versionado por nome de
+arquivo) e `libsignal` (saiu de dependência git para `^6.0.0` no registry npm).
+
+**Mitigação durante a investigação:** `WA_AUTORECONNECT_DISABLED_CHANNELS`
+(lista de IDs separados por vírgula) impede o agendamento de reconexão
+automática por canal, sem derrubar o reconnect manual. Evita que o loop sem
+teto queime milhares de tentativas enquanto se diagnostica.
 
 ## Suporte a imagens em notificações
 
