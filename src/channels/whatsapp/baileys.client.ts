@@ -8,6 +8,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys'
 import { getCachedJid, setCachedJid, setPhoneForLid, getPhoneForLid } from '../../lib/whatsapp-jid.cache'
 import { calculateBackoff } from '../../lib/backoff'
+import { waAutoReconnectDisabledChannels } from '../../lib/env'
 import { WhatsAppNumberNotFoundError } from './whatsapp-errors'
 
 export type WaSessionStatus = 'WARMING' | 'ACTIVE' | 'DISCONNECTED' | 'BANNED'
@@ -20,6 +21,22 @@ function waStatusLabel(status: number | null | undefined): string {
     0: 'ERROR', 1: 'PENDING', 2: 'SERVER_ACK', 3: 'DELIVERY_ACK', 4: 'READ', 5: 'PLAYED',
   }
   return labels[status ?? -1] ?? `unknown(${status})`
+}
+
+// Reverse lookup for Baileys' DisconnectReason enum. It is a numeric TS enum,
+// so Object.entries yields both directions — keep only name → code entries.
+// Codes shared by more than one name (408 = connectionLost/timedOut) list both.
+const DISCONNECT_REASON_NAMES: Record<number, string> = {}
+for (const [name, code] of Object.entries(DisconnectReason)) {
+  if (typeof code !== 'number') continue
+  DISCONNECT_REASON_NAMES[code] = DISCONNECT_REASON_NAMES[code]
+    ? `${DISCONNECT_REASON_NAMES[code]}/${name}`
+    : name
+}
+
+function disconnectReasonLabel(code: number | undefined): string {
+  if (code === undefined) return 'sem-statusCode'
+  return DISCONNECT_REASON_NAMES[code] ?? `desconhecido(${code})`
 }
 
 // Minimal pino-compatible logger that suppresses Baileys noise.
@@ -46,6 +63,15 @@ export class BaileysClient extends EventEmitter {
   // Set by disconnect() to suppress auto-reconnect and SESSAO_DESCONECTADA alerts.
   // Cleared on the next successful connection.open.
   private _manualDisconnect = false
+  // Diagnostic counters — reset per socket in connect(). Used to tell apart
+  // "never reached the pairing handshake" from "paired but dropped later".
+  private _qrCount = 0
+  private _credsUpdateCount = 0
+
+  // Short channel id for log prefixes — matches the existing [wa:reconnect] format.
+  private get shortId(): string {
+    return this.channelId.slice(0, 8)
+  }
 
   constructor(channelId: string, sessionsBasePath: string) {
     super()
@@ -66,6 +92,16 @@ export class BaileysClient extends EventEmitter {
   async connect(): Promise<void> {
     const { state, saveCreds } = await useMultiFileAuthState(this.sessionDir)
 
+    this._qrCount = 0
+    this._credsUpdateCount = 0
+
+    const hasSavedCreds = fs.existsSync(path.join(this.sessionDir, 'creds.json'))
+    console.log(
+      `[wa:connect] ${this.shortId} abrindo socket — ` +
+      `credsSalvas=${hasSavedCreds ? 'sim' : 'não (pareamento novo esperado)'} ` +
+      `tentativaAtual=${this._reconnectAttempt}`
+    )
+
     // v7: version is hardcoded in DEFAULT_CONNECTION_CONFIG ([2, 3000, 1035194821]).
     // fetchLatestBaileysVersion() was removed — just omit `version` from config.
     const socket = makeWASocket({
@@ -80,7 +116,17 @@ export class BaileysClient extends EventEmitter {
     })
     this.socket = socket
 
-    socket.ev.on('creds.update', saveCreds)
+    // Wrapped to log that the handshake actually produced credentials.
+    // Capped at 10 lines per socket — creds rotate frequently on a healthy session.
+    socket.ev.on('creds.update', async () => {
+      this._credsUpdateCount++
+      if (this._credsUpdateCount <= 10) {
+        console.log(
+          `[wa:creds] ${this.shortId} creds.update #${this._credsUpdateCount} — gravando auth state`
+        )
+      }
+      await saveCreds()
+    })
 
     // ── Delivery receipt listener ────────────────────────────────────────────
     // Fires when WA servers update the delivery status of our outgoing messages.
@@ -163,12 +209,27 @@ export class BaileysClient extends EventEmitter {
     // Capture `socket` in closure: if this.socket is replaced (reconnect/disconnect),
     // events from the old socket are ignored — prevents spurious DB writes.
     socket.ev.on('connection.update', (update) => {
-      if (this.socket !== socket) return
+      if (this.socket !== socket) {
+        // Stale socket — this client was replaced or disconnected. Logged (not
+        // silently dropped) because a zombie socket still emitting here is
+        // direct evidence of the orphaned reconnect-timer race.
+        console.warn(
+          `[wa:stale] ${this.shortId} evento de socket substituído descartado — ` +
+          `connection=${update.connection ?? 'none'} qr=${update.qr ? 'sim' : 'não'}`
+        )
+        return
+      }
 
       const { connection, lastDisconnect, qr } = update
 
       if (qr) {
+        this._qrCount++
+        console.log(`[wa:qr] ${this.shortId} QR #${this._qrCount} emitido (len=${qr.length})`)
         this.emit('qr', qr)
+      }
+
+      if (connection) {
+        console.log(`[wa:conn] ${this.shortId} connection=${connection}`)
       }
 
       if (connection === 'open') {
@@ -178,9 +239,28 @@ export class BaileysClient extends EventEmitter {
       }
 
       if (connection === 'close') {
-        const statusCode = (
-          lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
-        )?.output?.statusCode
+        const closeError = lastDisconnect?.error as
+          | { output?: { statusCode?: number; payload?: unknown }; message?: string; name?: string }
+          | undefined
+        const statusCode = closeError?.output?.statusCode
+
+        // ── Diagnóstico ──────────────────────────────────────────────────────
+        // statusCode era lido apenas para o teste de 403 e nunca logado, o que
+        // impedia distinguir loggedOut(401), connectionFailure(405),
+        // restartRequired(515) e connectionReplaced(440) entre si — todos caem
+        // no mesmo caminho DISCONNECTED + backoff, mas exigem tratamentos
+        // diferentes. qrEmitidos/credsUpdates mostram até onde o handshake foi.
+        console.log(
+          `[wa:close] ${this.shortId} statusCode=${statusCode ?? 'none'} ` +
+          `reason=${disconnectReasonLabel(statusCode)} ` +
+          `qrEmitidos=${this._qrCount} credsUpdates=${this._credsUpdateCount} ` +
+          `erro=${closeError?.name ?? '-'}: ${closeError?.message ?? '-'}`
+        )
+        if (closeError?.output?.payload !== undefined) {
+          console.log(
+            `[wa:close] ${this.shortId} payload=${JSON.stringify(closeError.output.payload)}`
+          )
+        }
 
         // forbidden (403) = genuine WhatsApp ban.
         // loggedOut (401) = user removed device from phone — can reconnect via QR.
@@ -191,6 +271,18 @@ export class BaileysClient extends EventEmitter {
         }
 
         this.setStatus('DISCONNECTED')
+
+        // Escape hatch de diagnóstico: impede que o loop de backoff continue
+        // queimando tentativas de pareamento contra o WhatsApp enquanto uma
+        // sessão travada está sob investigação. O reconnect manual segue valendo.
+        if (waAutoReconnectDisabledChannels.has(this.channelId)) {
+          console.warn(
+            `[wa:reconnect] ${this.shortId} auto-reconnect DESABILITADO via ` +
+            `WA_AUTORECONNECT_DISABLED_CHANNELS — nenhuma tentativa agendada. ` +
+            `Reconexão apenas manual via POST /v1/channels/${this.channelId}/reconnect`
+          )
+          return
+        }
 
         if (this._shouldReconnect) {
           const delay = calculateBackoff(this._reconnectAttempt)

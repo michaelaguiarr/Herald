@@ -18,6 +18,11 @@ const envSchema = z.object({
   // Timezone for daily-reset cron (sentToday=0). Default UTC.
   // Use IANA timezone names, e.g. 'America/Sao_Paulo' for BRT (UTC-3).
   DAILY_RESET_TZ: z.string().default('UTC'),
+  // Diagnostic escape hatch: channel IDs (comma-separated) whose WhatsApp
+  // session must NOT schedule automatic reconnects. Used to stop the backoff
+  // loop from burning pairing attempts against WhatsApp while a stuck session
+  // is under investigation. Manual POST /channels/:id/reconnect still works.
+  WA_AUTORECONNECT_DISABLED_CHANNELS: z.string().default(''),
   SEED_OWNER_NAME: z.string().optional(),
   SEED_OWNER_EMAIL: z.string().email().optional(),
   SEED_OWNER_PASSWORD: z.string().optional(),
@@ -34,3 +39,20 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data
+
+/**
+ * Channel IDs with WhatsApp auto-reconnect disabled, parsed from
+ * WA_AUTORECONNECT_DISABLED_CHANNELS. Empty set when the var is unset.
+ */
+export const waAutoReconnectDisabledChannels = new Set(
+  env.WA_AUTORECONNECT_DISABLED_CHANNELS.split(',')
+    .map((id) => id.trim())
+    .filter(Boolean)
+)
+
+if (waAutoReconnectDisabledChannels.size > 0) {
+  console.warn(
+    '[env] Auto-reconnect WhatsApp DESABILITADO para os canais: ' +
+      [...waAutoReconnectDisabledChannels].join(', ')
+  )
+}
