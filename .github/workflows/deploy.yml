@@ -28,6 +28,22 @@ jobs:
             cd /opt/docker/herald
             git pull
             docker compose up --build -d
+            # REDUNDANTE POR DESIGN — não reordene achando que é bug.
+            #
+            # Quem de fato aplica as migrations é o scripts/entrypoint.sh do
+            # container, que roda `prisma migrate deploy` ANTES de dar exec no
+            # servidor. Quando esta linha executa, a migration já passou.
+            #
+            # Mover este comando para ANTES do `up --build -d` PIORA: o `exec`
+            # entra no container que está no ar, ou seja, na imagem ANTIGA —
+            # cujo /app/prisma/migrations ainda não tem a migration nova. Não
+            # aplicaria nada, e ainda abortaria o deploy se o container
+            # estivesse parado.
+            #
+            # O valor desta linha é ser uma segunda passada idempotente: se a
+            # migration falhar no entrypoint, o container morre em restart-loop
+            # e este comando falha junto, fazendo o erro aparecer no CI em vez
+            # de só no log do container.
             docker compose exec api npx prisma migrate deploy
 
       - name: Health check
