@@ -8,12 +8,20 @@ export interface EmailCredentials {
   from: string
 }
 
+/**
+ * Subject used when the caller does not send one.
+ *
+ * Kept as the exact previous hardcoded value on purpose: every integration that
+ * existed before `subject` was introduced keeps producing byte-identical emails.
+ */
+export const DEFAULT_SUBJECT = 'Notificação'
+
 export async function sendViaEmail(
   credentials: EmailCredentials,
   recipientEmail: string,
   recipientName: string,
   message: string,
-  opts?: { imageUrl?: string; imageCaption?: string }
+  opts?: { imageUrl?: string; imageCaption?: string; subject?: string | null }
 ): Promise<void> {
   const transport = nodemailer.createTransport({
     host: credentials.host,
@@ -35,12 +43,26 @@ export async function sendViaEmail(
       `</div>` + (message ? `<div>${message}</div>` : '')
   }
 
-  const plainText = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+  // `message` is delivered as the HTML body — it always was. Senders that pass
+  // plain text still work (the client renders it as a single run); senders that
+  // pass markup get it rendered. What was missing was never HTML support, only
+  // a subject.
+  //
+  // <style> blocks are stripped here before flattening, otherwise the CSS text
+  // inside them would leak into the plain-text alternative as gibberish.
+  const plainText = html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  const subject = opts?.subject?.trim() || DEFAULT_SUBJECT
 
   await transport.sendMail({
     from: credentials.from,
     to: `"${recipientName}" <${recipientEmail}>`,
-    subject: 'Notificação',
+    subject,
     html,
     text: plainText,
   })
