@@ -15,6 +15,12 @@ export type WaSessionStatus = 'WARMING' | 'ACTIVE' | 'DISCONNECTED' | 'BANNED'
 
 const OPT_OUT_KEYWORDS = ['parar', 'stop', 'cancelar', 'sair', 'remover', 'descadastrar']
 
+// restartRequired(515) é o passo final do pareamento — reconecta quase imediato.
+const RESTART_REQUIRED_DELAY_MS = 500
+// Teto para 515 consecutivos: o fluxo normal usa 1. Repetição indica outra
+// coisa, e sem teto o par close→reconnect giraria a cada 500 ms.
+const MAX_CONSECUTIVE_RESTARTS = 5
+
 // proto.WebMessageInfo.Status — mirrors the protobuf enum for human-readable logs
 function waStatusLabel(status: number | null | undefined): string {
   const labels: Record<number, string> = {
@@ -67,6 +73,17 @@ export class BaileysClient extends EventEmitter {
   // "never reached the pairing handshake" from "paired but dropped later".
   private _qrCount = 0
   private _credsUpdateCount = 0
+  // Handle of the pending auto-reconnect. Kept so disconnect()/connect() can
+  // cancel it — without this the timer is unreachable and always fires, which
+  // resurrects a dead client and opens a second socket on the same auth dir.
+  private _reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  // Bumped by connect() and disconnect(). A scheduled reconnect captures the
+  // epoch and aborts at fire time if it no longer matches, so a timer that
+  // slipped past clearTimeout cannot act on a superseded client.
+  private _epoch = 0
+  // Consecutive restartRequired(515) closes. 515 right after pairing is normal
+  // and must reconnect immediately, but a repeating 515 would spin — bounded here.
+  private _restartRequiredCount = 0
 
   // Short channel id for log prefixes — matches the existing [wa:reconnect] format.
   private get shortId(): string {
@@ -89,7 +106,67 @@ export class BaileysClient extends EventEmitter {
     this.emit('status-change', status)
   }
 
+  private clearReconnectTimer(): void {
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer)
+      this._reconnectTimer = null
+    }
+  }
+
+  /**
+   * Schedules a reconnect that can actually be cancelled.
+   *
+   * The previous implementation checked `_shouldReconnect` only when scheduling,
+   * so a timer already in flight always ran — even after disconnect(). That
+   * resurrected the dead client, which reopened a socket on the same auth
+   * directory as its replacement. Two sockets sharing one credential store is
+   * what WhatsApp reports as `Stream Errored (conflict)` → 401, destroying a
+   * pairing seconds after it succeeds.
+   *
+   * Both guards are re-evaluated at fire time, not at schedule time.
+   */
+  private scheduleReconnect(delay: number, label: string): void {
+    this.clearReconnectTimer()
+    const epoch = this._epoch
+
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null
+
+      if (!this._shouldReconnect || this._epoch !== epoch) {
+        console.log(
+          `[wa:reconnect] ${this.shortId} timer cancelado no disparo (${label}) — ` +
+          `shouldReconnect=${this._shouldReconnect} epoch=${this._epoch}≠${epoch}`
+        )
+        return
+      }
+
+      this.connect().catch((err) =>
+        console.error(`[wa:${this.channelId}] Falha ao reconectar:`, err)
+      )
+    }, delay)
+  }
+
+  /**
+   * Wipes the saved Baileys auth state. Called when WhatsApp invalidates the
+   * credentials (loggedOut), so the next connect starts a fresh pairing and
+   * emits a QR instead of silently retrying dead credentials forever.
+   */
+  private clearAuthState(): void {
+    try {
+      fs.rmSync(this.sessionDir, { recursive: true, force: true })
+      fs.mkdirSync(this.sessionDir, { recursive: true })
+      console.log(`[wa:auth] ${this.shortId} auth state removida — novo QR necessário`)
+    } catch (err) {
+      console.error(`[wa:auth] ${this.shortId} falha ao remover auth state:`, err)
+    }
+  }
+
   async connect(): Promise<void> {
+    // This connect supersedes any pending reconnect — cancel it and invalidate
+    // in-flight timers so only one connection attempt per client can exist.
+    this.clearReconnectTimer()
+    this._epoch++
+
     const { state, saveCreds } = await useMultiFileAuthState(this.sessionDir)
 
     this._qrCount = 0
@@ -234,6 +311,7 @@ export class BaileysClient extends EventEmitter {
 
       if (connection === 'open') {
         this._reconnectAttempt = 0   // reset backoff counter
+        this._restartRequiredCount = 0
         this._manualDisconnect = false  // clear flag if somehow reconnected
         this.setStatus('ACTIVE')
       }
@@ -262,11 +340,55 @@ export class BaileysClient extends EventEmitter {
           )
         }
 
-        // forbidden (403) = genuine WhatsApp ban.
-        // loggedOut (401) = user removed device from phone — can reconnect via QR.
+        // ── forbidden (403) — banimento real ────────────────────────────────
         if (statusCode === DisconnectReason.forbidden) {
           this.setStatus('BANNED')
           this._shouldReconnect = false
+          this.clearReconnectTimer()
+          return
+        }
+
+        // ── restartRequired (515) — passo obrigatório do pareamento ─────────
+        // Não é falha: o WhatsApp fecha o stream logo após um pareamento bem
+        // sucedido e exige reconexão imediata para concluir. Tratar como falha
+        // (DISCONNECTED + backoff) descarta o pareamento — foi exatamente o que
+        // a flag de diagnóstico causou em produção. Por isso este ramo vem
+        // antes do gate da flag, não conta tentativa e não emite DISCONNECTED
+        // (evita flap de status no banco e no SSE).
+        if (statusCode === DisconnectReason.restartRequired) {
+          this._restartRequiredCount++
+          if (this._restartRequiredCount <= MAX_CONSECUTIVE_RESTARTS) {
+            console.log(
+              `[wa:reconnect] ${this.shortId} restartRequired(515) #${this._restartRequiredCount} — ` +
+              `reconexão imediata (concluindo pareamento)`
+            )
+            this.scheduleReconnect(RESTART_REQUIRED_DELAY_MS, '515')
+            return
+          }
+          // 515 repetido não é mais o fluxo normal de pareamento — cai no
+          // caminho de falha comum em vez de girar indefinidamente.
+          console.warn(
+            `[wa:reconnect] ${this.shortId} restartRequired(515) repetiu ` +
+            `${this._restartRequiredCount}x — tratando como falha`
+          )
+        }
+
+        // ── loggedOut (401) — credenciais invalidadas, estado terminal ──────
+        // Ocorre quando o dispositivo é desvinculado pelo celular OU quando
+        // outra conexão assume o mesmo slot ("Stream Errored (conflict)").
+        // Em ambos os casos as credenciais salvas estão mortas: reconectar com
+        // elas só pode falhar, e era isso que alimentava o loop infinito de
+        // "Connection Failure" com credsUpdates=0. Para o loop e limpa a auth
+        // para que o próximo start gere um QR novo em vez de insistir no morto.
+        if (statusCode === DisconnectReason.loggedOut) {
+          console.warn(
+            `[wa:${this.channelId}] loggedOut(401) — credenciais invalidadas ` +
+            `(${closeError?.message ?? 'sem detalhe'}). Sem reconexão automática; novo QR necessário.`
+          )
+          this._shouldReconnect = false
+          this.clearReconnectTimer()
+          this.clearAuthState()
+          this.setStatus('DISCONNECTED')
           return
         }
 
@@ -288,15 +410,11 @@ export class BaileysClient extends EventEmitter {
           const delay = calculateBackoff(this._reconnectAttempt)
           const nextAt = new Date(Date.now() + delay).toTimeString().slice(0, 8)
           console.log(
-            `[wa:reconnect] ${this.channelId.slice(0, 8)} ` +
+            `[wa:reconnect] ${this.shortId} ` +
             `tentativa=${this._reconnectAttempt} delay=${delay}ms próxima=${nextAt}`
           )
           this._reconnectAttempt++
-          setTimeout(() => {
-            this.connect().catch((err) =>
-              console.error(`[wa:${this.channelId}] Falha ao reconectar:`, err)
-            )
-          }, delay)
+          this.scheduleReconnect(delay, `tentativa=${this._reconnectAttempt - 1}`)
         }
       }
     })
@@ -305,6 +423,11 @@ export class BaileysClient extends EventEmitter {
   async disconnect(emitStatusChange = true): Promise<void> {
     this._shouldReconnect = false
     this._manualDisconnect = true  // signals: no auto-reconnect, no SESSAO_DESCONECTADA alert
+    // Cancel the pending reconnect and invalidate any timer that already
+    // slipped past clearTimeout — otherwise this client comes back from the
+    // dead and races its own replacement for the same auth directory.
+    this.clearReconnectTimer()
+    this._epoch++
     const socket = this.socket
     this.socket = null  // nullify before end() — stale guard in connection.update ignores the close event
     if (socket) {
