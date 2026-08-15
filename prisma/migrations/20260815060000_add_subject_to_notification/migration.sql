@@ -1,0 +1,19 @@
+-- Assunto do e-mail, opcional.
+--
+-- Ate aqui o assunto era cravado em "Notificação" dentro do nodemailer client,
+-- o que jogava toda mensagem de um mesmo remetente na MESMA thread do Gmail —
+-- convite de membro, recuperacao de senha e qualquer outro aviso, todos com o
+-- mesmo titulo.
+--
+-- NULL = usar o padrao antigo (DEFAULT_SUBJECT). E o que garante que toda
+-- integracao ja existente continue produzindo e-mail identico ao de antes: o
+-- Gestao Comunidade so manda WhatsApp, e qualquer chamada que nao preencha o
+-- campo cai no mesmo lugar de sempre.
+--
+-- Precisa ser COLUNA, e nao so campo de request: a entrega e assincrona
+-- (BullMQ), e o worker le a notificacao de volta do banco na hora de despachar.
+--
+-- Coluna nullable e sem default: o Postgres resolve com uma mudanca de catalogo,
+-- sem reescrever a tabela e sem lock longo. Seguro de rodar em producao com a
+-- fila em movimento.
+ALTER TABLE "notification" ADD COLUMN "subject" TEXT;

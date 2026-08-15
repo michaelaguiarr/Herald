@@ -17,14 +17,20 @@ export async function dispatch(channel: Channel, notification: Notification): Pr
       if (!notification.recipientEmail) {
         throw new Error('recipientEmail ausente para canal EMAIL')
       }
+      // `subject` vai SEMPRE (mesmo null): é o nodemailer client que decide o
+      // fallback para DEFAULT_SUBJECT. Deixar a escolha lá evita que o padrão
+      // exista em dois lugares e um dia divirja do outro.
       await sendViaEmail(
         credentials as unknown as EmailCredentials,
         notification.recipientEmail,
         notification.recipientName,
         notification.message,
-        notification.imageUrl
-          ? { imageUrl: notification.imageUrl, imageCaption: notification.imageCaption ?? undefined }
-          : undefined
+        {
+          subject: notification.subject,
+          ...(notification.imageUrl
+            ? { imageUrl: notification.imageUrl, imageCaption: notification.imageCaption ?? undefined }
+            : {}),
+        }
       )
       return {}
     }

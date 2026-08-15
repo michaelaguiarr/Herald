@@ -20,6 +20,7 @@ const notificationShape = z.object({
   recipientEmail: z.string().nullable(),
   recipientTelegramId: z.string().nullable(),
   message: z.string(),
+  subject: z.string().nullable(),
   imageUrl: z.string().nullable(),
   imageCaption: z.string().nullable(),
   status: z.nativeEnum(NotificationStatus),
@@ -63,6 +64,10 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
           recipientEmail: z.string().email().optional(),
           recipientTelegramId: z.string().optional(),
           message: z.string().optional(),
+          // EMAIL only — WhatsApp e Telegram não têm assunto, e mandá-lo neles
+          // é inofensivo (o dispatcher simplesmente não olha). Ausente = o
+          // DEFAULT_SUBJECT do nodemailer client, que é o valor de sempre.
+          subject: z.string().min(1).max(200).optional(),
           imageUrl: z.string().url({ message: 'imageUrl deve ser uma URL válida' }).optional(),
           imageCaption: z.string().optional(),
         }).refine(
@@ -81,6 +86,7 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
         recipientEmail,
         recipientTelegramId,
         message,
+        subject,
         imageUrl,
         imageCaption,
       } = request.body
@@ -109,6 +115,7 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
             recipientEmail: recipientEmail ?? null,
             recipientTelegramId: recipientTelegramId ?? null,
             message: message ?? '',
+            subject: subject ?? null,
             imageUrl: imageUrl ?? null,
             imageCaption: imageCaption ?? null,
             status: NotificationStatus.PENDENTE,
@@ -324,6 +331,8 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
           recipientEmail: z.string().email().optional(),
           recipientTelegramId: z.string().optional(),
           message: z.string().optional(),
+          // Mesma regra do /send: EMAIL only, ausente cai no DEFAULT_SUBJECT.
+          subject: z.string().min(1).max(200).optional(),
           imageUrl: z.string().url({ message: 'imageUrl deve ser uma URL válida' }).optional(),
           imageCaption: z.string().optional(),
           scheduledAt: z.string().datetime({ message: 'scheduledAt deve ser ISO 8601 com timezone, ex: 2026-01-15T14:30:00Z' }),
@@ -336,7 +345,7 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
     },
     async (request, reply) => {
       const { organizationId, channelType, recipientName, recipientPhone,
-              recipientEmail, recipientTelegramId, message, imageUrl, imageCaption, scheduledAt } = request.body
+              recipientEmail, recipientTelegramId, message, subject, imageUrl, imageCaption, scheduledAt } = request.body
       const actor = request.user
 
       await assertOrgAccess(actor, organizationId)
@@ -362,6 +371,7 @@ export async function notificationsRoutes(fastify: FastifyInstance) {
             recipientEmail: recipientEmail ?? null,
             recipientTelegramId: recipientTelegramId ?? null,
             message: message ?? '',
+            subject: subject ?? null,
             imageUrl: imageUrl ?? null,
             imageCaption: imageCaption ?? null,
             status: NotificationStatus.AGENDADO,
