@@ -341,10 +341,13 @@ com a versão nova a partir do IP de produção antes de deployar.
 Ao subir, conferir também `whatsapp-rust-bridge` (patch versionado por nome de
 arquivo) e `libsignal` (saiu de dependência git para `^6.0.0` no registry npm).
 
-**Mitigação durante a investigação:** `WA_AUTORECONNECT_DISABLED_CHANNELS`
-(lista de IDs separados por vírgula) impede o agendamento de reconexão
-automática por canal, sem derrubar o reconnect manual. Evita que o loop sem
-teto queime milhares de tentativas enquanto se diagnostica.
+**Sobre suprimir a reconexão durante um diagnóstico:** durante este incidente
+existiu uma env var (`WA_AUTORECONNECT_DISABLED_CHANNELS`) que desligava o
+auto-reconnect por canal. Foi **removida** depois. Esquecida ligada, ela
+impediu um canal já saudável de reconectar após uma queda transitória `428` —
+ou seja, causou exatamente a indisponibilidade que existia para prevenir.
+Se algo assim for necessário de novo, prefira algo que expire sozinho ou que
+apareça no estado do canal na API, não uma env var silenciosa.
 
 ## Suporte a imagens em notificações
 

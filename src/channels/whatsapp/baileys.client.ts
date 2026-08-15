@@ -8,7 +8,6 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys'
 import { getCachedJid, setCachedJid, setPhoneForLid, getPhoneForLid } from '../../lib/whatsapp-jid.cache'
 import { calculateBackoff } from '../../lib/backoff'
-import { waAutoReconnectDisabledChannels } from '../../lib/env'
 import { WhatsAppNumberNotFoundError } from './whatsapp-errors'
 
 export type WaSessionStatus = 'WARMING' | 'ACTIVE' | 'DISCONNECTED' | 'BANNED'
@@ -393,18 +392,6 @@ export class BaileysClient extends EventEmitter {
         }
 
         this.setStatus('DISCONNECTED')
-
-        // Escape hatch de diagnóstico: impede que o loop de backoff continue
-        // queimando tentativas de pareamento contra o WhatsApp enquanto uma
-        // sessão travada está sob investigação. O reconnect manual segue valendo.
-        if (waAutoReconnectDisabledChannels.has(this.channelId)) {
-          console.warn(
-            `[wa:reconnect] ${this.shortId} auto-reconnect DESABILITADO via ` +
-            `WA_AUTORECONNECT_DISABLED_CHANNELS — nenhuma tentativa agendada. ` +
-            `Reconexão apenas manual via POST /v1/channels/${this.channelId}/reconnect`
-          )
-          return
-        }
 
         if (this._shouldReconnect) {
           const delay = calculateBackoff(this._reconnectAttempt)
